@@ -1,3 +1,9 @@
+tiny-torch-state.pkl is a generated protocol-2 torch state-dict metadata fixture.
+It describes one 2x2 float32 weight in storage 0 (16 bytes); it contains no actual weights
+or executable test dependency. It was produced with Python pickle persistent_id and
+_rebuild_tensor_v2 reduction, using placeholder torch globals without importing PyTorch.
+The SD parser reads the fixture as metadata and never unpickles or executes its globals.
+
 # MiniCPM5 template fixture
 
 `minicpm5-chat.jinja` is the embedded `tokenizer.chat_template` extracted from

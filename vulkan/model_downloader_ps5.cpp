@@ -28,12 +28,21 @@ int scePthreadJoin(void *, void **);
 }
 
 namespace prospero_model_download {
+Fit estimate_fit(std::uint64_t file_bytes) {
+    // The RADV heap is fixed (11,712 MiB reported, docs/VK_LOG.md); about 1 GiB goes to the
+    // interface and a margin, leaving roughly 10.7 GiB. These file-size badges are
+    // estimates: catalog metadata cannot determine a model's KV/compute allocations
+    // or prove that a chosen model/context fits the actual RADV allocation ceiling.
+    constexpr std::uint64_t kComfortableBytes = 8ULL * 1024 * 1024 * 1024;
+    constexpr std::uint64_t kCeilingBytes = 10ULL * 1024 * 1024 * 1024 + 717ULL * 1024 * 1024;
+    if (file_bytes < kComfortableBytes) return Fit::Fits;
+    if (file_bytes <= kCeilingBytes) return Fit::Tight;
+    return Fit::DoesNotFit;
+}
 namespace {
 using Json = nlohmann::json;
 constexpr std::uint64_t kMaxCatalogBytes = 8 * 1024 * 1024;
-// Keep enough headroom for Vulkan allocations and KV cache on the console.
-constexpr std::uint64_t kMaxModelBytes = 7ULL * 1024 * 1024 * 1024;
-struct Item { std::string name, sha256; std::uint64_t size = 0; };
+struct Item { std::string name, sha256; std::uint64_t size = 0; Fit fit = Fit::Fits; };
 std::mutex state_mutex;
 std::mutex job_mutex;
 std::vector<Item> items;
@@ -109,15 +118,16 @@ struct HttpSession {
         }, nullptr);
         return true;
     }
+    long status = 0; // of the last answer: 206 when a request from an offset was honoured
     void close() { prospero_https_close(session); session = nullptr; }
     ~HttpSession() { close(); }
-    bool get(const std::string &url) {
-        long status = 0;
+    bool get(const std::string &url, std::uint64_t offset = 0) {
+        status = 0;
         if (!open()) return false;
-        if (prospero_https_get(session, url.c_str(), &status) != 0) {
+        if (prospero_https_get_from(session, url.c_str(), offset, &status) != 0) {
             set_failure("Connection", prospero_https_error(session)); return false;
         }
-        if (status != 200) {
+        if (status != 200 && !(offset && status == 206)) {
             char text[160];
             std::snprintf(text, sizeof(text), "Hugging Face answered HTTP %ld.%s", status,
                           status == 401 || status == 403 ? " The repository may need an account."
@@ -180,7 +190,8 @@ bool read_catalog(const std::string &repo, std::vector<Item> *output) {
             if (lfs.contains("oid") && lfs["oid"].is_string()) item.sha256 = lfs["oid"].get<std::string>();
         }
         if (item.sha256.compare(0, 7, "sha256:") == 0) item.sha256.erase(0, 7);
-        if (item.size == 0 || item.size > kMaxModelBytes || item.sha256.size() != 64) continue;
+        item.fit = estimate_fit(item.size);
+        if (item.size == 0 || item.fit == Fit::DoesNotFit || item.sha256.size() != 64) continue;
         output->push_back(std::move(item));
     }
     std::sort(output->begin(), output->end(), [](const Item &a, const Item &b) {
@@ -291,50 +302,113 @@ void finish_cancelled(State next) {
     prospero::debug::line("download", "cancelled, partial files removed");
     current.store(next, std::memory_order_release);
 }
+// What a .part file left by an interrupted download already holds, hashed again so the
+// finished file can still be verified in one digest. 0 (and a fresh hash) when there is
+// nothing to keep: no file, more bytes than the file should have, or a read error.
+std::uint64_t resume_point(const std::string &part, std::uint64_t expected, Sha256 &hash) {
+    std::FILE *file = std::fopen(part.c_str(), "rb");
+    if (!file) return 0;
+    std::vector<std::uint8_t> buffer(4 * 1024 * 1024);
+    std::uint64_t done = 0;
+    bool keep = true;
+    for (;;) {
+        const std::size_t n = std::fread(buffer.data(), 1, buffer.size(), file);
+        if (n) { hash.update(buffer.data(), n); done += n; }
+        if (done > expected || cancel_pending()) { keep = false; break; }
+        if (n < buffer.size()) { keep = std::feof(file) != 0; break; }
+    }
+    std::fclose(file);
+    if (!keep || !done) { hash = Sha256{}; return 0; }
+    return done;
+}
+
+// Downloads `url` into `part` and checks it against its size and SHA-256. A download the
+// network interrupted leaves its .part file, and the next attempt asks only for the rest
+// (an HTTP Range request); a cancelled or wrong file is removed. `base` is what earlier
+// files of the same job already counted towards the progress bar.
+bool fetch_verified(HttpSession &http, const std::string &url, const std::string &part,
+                    std::uint64_t expected, const std::string &sha256, std::uint64_t base,
+                    const char *name) {
+    Sha256 hash;
+    std::uint64_t done = resume_point(part, expected, hash);
+    const std::uint64_t resumed = done;
+    if (cancel_pending()) { std::remove(part.c_str()); return false; }
+    completed_bytes.store(base + done, std::memory_order_release);
+    if (done) prospero::debug::line("download", "%s: continuing at %llu of %llu bytes", name,
+                                    static_cast<unsigned long long>(done),
+                                    static_cast<unsigned long long>(expected));
+    const Pace pace;
+    bool ok = true, network_failed = false;
+    if (done < expected) {
+        ok = http.get(url, done);
+        network_failed = !ok && http.status == 0; // no answer at all, not a refusal
+        if (ok && done && http.status == 200) {
+            // The server sent the whole file instead of the rest: start the file again.
+            done = 0; hash = Sha256{};
+            completed_bytes.store(base, std::memory_order_release);
+        }
+        std::FILE *file = ok ? std::fopen(part.c_str(), done ? "ab" : "wb") : nullptr;
+        if (ok && !file) { storage_error("Cannot create download file"); ok = false; }
+        std::vector<std::uint8_t> buffer(1024 * 1024);
+        while (ok) {
+            const int n = http.read(buffer.data(), buffer.size());
+            if (cancel_pending()) { ok = false; break; }
+            if (n < 0) { set_failure("Download", http.error()); ok = false; network_failed = true; break; }
+            if (n == 0) break;
+            if (done + static_cast<std::uint64_t>(n) > expected) {
+                set_status("The file is larger than Hugging Face listed it."); current.store(State::Failed);
+                ok = false; break;
+            }
+            if (std::fwrite(buffer.data(), 1, n, file) != static_cast<std::size_t>(n)) {
+                storage_error("Disk write"); ok = false; break;
+            }
+            hash.update(buffer.data(), n); done += n;
+            completed_bytes.store(base + done, std::memory_order_release);
+        }
+        if (file && std::fclose(file) != 0 && ok) { storage_error("Final disk write"); ok = false; }
+        // A connection that broke after some bytes landed keeps them for the next attempt.
+        if (network_failed && done && !cancel_pending()) {
+            char text[160];
+            std::snprintf(text, sizeof(text),
+                          "Download stopped at %llu of %llu MiB (%s). Download it again to continue.",
+                          static_cast<unsigned long long>(done >> 20),
+                          static_cast<unsigned long long>(expected >> 20), http.error());
+            set_status(text);
+            prospero::debug::line("download", "%s: kept %llu bytes for the next attempt", name,
+                                  static_cast<unsigned long long>(done));
+            return false;
+        }
+    }
+    if (ok) {
+        const auto digest = hash.finish();
+        if (done != expected || digest != sha256) {
+            char error[160];
+            std::snprintf(error, sizeof(error), "Verification failed: %s (%llu/%llu bytes).", name,
+                          static_cast<unsigned long long>(done), static_cast<unsigned long long>(expected));
+            std::fprintf(stderr, "[download] %s sha256=%s expected=%s\n", error, digest.c_str(), sha256.c_str());
+            set_status(error); current.store(State::Failed); ok = false;
+        }
+    }
+    if (!ok) { std::remove(part.c_str()); return false; }
+    pace.report(name, done - resumed);
+    return true;
+}
 bool fetch_preset_file(HttpSession &http, const Preset &preset, const PresetFile &item,
                        const std::string &target, std::uint64_t &completed) {
     const auto separator = target.find_last_of('/');
     if (!make_directories(target.substr(0, separator))) return false;
     const std::string part = target + ".part";
-    FILE *file = std::fopen(part.c_str(), "wb");
-    if (!file) { storage_error("Cannot create preset file"); return false; }
-    const Pace pace;
-    bool ok = http.get(std::string("https://huggingface.co/") + preset.repository +
-                       "/resolve/" + preset.revision + "/" + encode_path(item.source));
-    Sha256 hash;
-    std::array<std::uint8_t, 256 * 1024> buffer{};
-    std::uint64_t done = 0;
-    while (ok) {
-        int count = http.read(buffer.data(), buffer.size());
-        if (cancel_pending()) { ok=false; break; }
-        if (count < 0) { set_failure("Preset download", http.error()); ok=false; break; }
-        if (!count) break;
-        if (done + static_cast<std::uint64_t>(count) > item.size) {
-            set_status("Preset file is larger than its pinned manifest."); current.store(State::Failed); ok=false; break;
-        }
-        if (std::fwrite(buffer.data(), 1, count, file) != static_cast<std::size_t>(count)) {
-            storage_error("Preset disk write"); ok=false; break;
-        }
-        hash.update(buffer.data(), count); done += count;
-        completed_bytes.store(completed + done, std::memory_order_release);
+    // A file an interrupted bundle download already finished is checked again, not fetched again.
+    if (access(target.c_str(), F_OK) == 0) rename(target.c_str(), part.c_str());
+    if (!fetch_verified(http, std::string("https://huggingface.co/") + preset.repository +
+                        "/resolve/" + preset.revision + "/" + encode_path(item.source),
+                        part, item.size, item.sha256, completed, item.path))
+        return false;
+    if (rename(part.c_str(), target.c_str()) != 0) {
+        storage_error("Cannot finalize preset file"); std::remove(part.c_str()); return false;
     }
-    if (std::fclose(file) != 0 && ok) { storage_error("Preset final disk write"); ok=false; }
-    if (ok) {
-        const auto digest = hash.finish();
-        if (done != item.size || digest != item.sha256) {
-            char error[160];
-            std::snprintf(error, sizeof(error), "Verification failed: %s (%llu/%llu bytes).",
-                item.path, static_cast<unsigned long long>(done), static_cast<unsigned long long>(item.size));
-            std::fprintf(stderr, "[preset] %s sha256=%s expected=%s\n", error, digest.c_str(), item.sha256);
-            set_status(error); current.store(State::Failed); ok=false;
-        }
-    }
-    if (ok && rename(part.c_str(), target.c_str()) != 0) {
-        storage_error("Cannot finalize preset file"); ok=false;
-    }
-    if (!ok) std::remove(part.c_str());
-    if (ok) { completed += done; pace.report(item.path, done); }
-    return ok;
+    completed += item.size;
+    return true;
 }
 void install_preset() {
     const auto &preset = presets[worker_preset.load()];
@@ -401,7 +475,7 @@ void *worker_impl(void *) {
             Item item;
             item.name = entry["id"].get<std::string>();
             if (!safe_repo(item.name)) continue;
-            set_status("Checking repositories for GGUF files within the 7 GiB download limit...");
+            set_status("Checking repositories for GGUF files and memory estimates...");
             std::vector<Item> eligible;
             if (!read_catalog(item.name, &eligible)) {
                 current.store(State::Searching, std::memory_order_release);
@@ -419,7 +493,7 @@ void *worker_impl(void *) {
             std::lock_guard<std::mutex> lock(state_mutex);
             items = std::move(found);
             std::snprintf(current_status, sizeof(current_status),
-                          "%zu repositories with GGUF files up to 7 GiB found.", items.size());
+                          "%zu repositories with GGUF files found.", items.size());
         }
         current.store(State::SearchReady, std::memory_order_release);
         worker_done.store(true, std::memory_order_release);
@@ -431,10 +505,10 @@ void *worker_impl(void *) {
             std::lock_guard<std::mutex> lock(state_mutex); items=std::move(found);
             if (items.empty())
                 std::snprintf(current_status, sizeof(current_status),
-                              "No verified single GGUF files within the 7 GiB download limit.");
+                              "No verified single GGUF files found.");
             else
                 std::snprintf(current_status, sizeof(current_status),
-                              "%zu GGUF files within the 7 GiB limit.", items.size());
+                              "%zu GGUF files with memory estimates.", items.size());
             current.store(State::Ready, std::memory_order_release);
         }
         worker_done.store(true, std::memory_order_release);
@@ -452,29 +526,13 @@ void *worker_impl(void *) {
         if (!ensure_model_root()) { storage_error("Cannot open model storage"); worker_done.store(true); return nullptr; }
         const std::string final_path=std::string(prospero::model_root())+"/"+installed_name(repo,item.name);
         const std::string part_path=final_path+".part";
-        FILE *file=std::fopen(part_path.c_str(),"wb");
-        if (!file) { storage_error("Cannot create model file"); worker_done.store(true); return nullptr; }
         const std::string url="https://huggingface.co/"+repo+"/resolve/main/"+encode_path(item.name);
-        const Pace pace;
-        bool ok=http.get(url);
-        std::uint64_t expected=item.size;
-        Sha256 hash;
-        std::array<std::uint8_t, 1024*1024> buffer{};
-        std::uint64_t done=0;
-        while(ok){int n=http.read(buffer.data(),buffer.size());if(cancel_pending()){ok=false;break;}if(n<0){set_failure("Model download",http.error());ok=false;break;}if(n==0)break;
-            if(done+static_cast<std::uint64_t>(n)>expected){set_error("Model size check",-1);ok=false;break;}
-            if(std::fwrite(buffer.data(),1,n,file)!=static_cast<std::size_t>(n)){storage_error("Disk write");ok=false;break;}
-            hash.update(buffer.data(),n);done+=n;completed_bytes.store(done,std::memory_order_release);
-        }
-        if (std::fclose(file) != 0 && ok) { storage_error("Final disk write"); ok=false; }
-        total_bytes.store(expected,std::memory_order_release);
-        if(ok&&(done!=expected||hash.finish()!=item.sha256)){set_status("Download size or SHA-256 check failed; partial file removed.");current.store(State::Failed);ok=false;}
-        if(ok&&rename(part_path.c_str(),final_path.c_str())!=0){set_status("Could not finalize downloaded model file.");current.store(State::Failed);ok=false;}
-        if(!ok) std::remove(part_path.c_str());
-        if(ok) pace.report(item.name.c_str(), done);
+        total_bytes.store(item.size,std::memory_order_release);
+        bool ok=fetch_verified(http,url,part_path,item.size,item.sha256,0,item.name.c_str());
+        if(ok&&rename(part_path.c_str(),final_path.c_str())!=0){set_status("Could not finalize downloaded model file.");current.store(State::Failed);std::remove(part_path.c_str());ok=false;}
         // The repository's file list is still there: another file can be chosen.
         if(!ok&&cancel_pending()) finish_cancelled(State::Ready);
-        if(ok){char text[160];std::snprintf(text,sizeof(text),"Verified %s (%llu MiB). Restart not needed; refreshing models.",installed_name(repo,item.name).c_str(),static_cast<unsigned long long>(done/(1024*1024)));set_status(text);current.store(State::Complete,std::memory_order_release);}
+        if(ok){char text[160];std::snprintf(text,sizeof(text),"Verified %s (%llu MiB). Restart not needed; refreshing models.",installed_name(repo,item.name).c_str(),static_cast<unsigned long long>(item.size/(1024*1024)));set_status(text);current.store(State::Complete,std::memory_order_release);}
     }
     worker_done.store(true, std::memory_order_release);
     return nullptr;
@@ -546,7 +604,7 @@ void progress(std::uint64_t *completed, std::uint64_t *total) {
 }
 void status(char *out,std::size_t cap){if(!cap)return;std::lock_guard<std::mutex> lock(state_mutex);std::snprintf(out,cap,"%s",current_status);if(state()==State::Downloading&&cancel_pending()){std::snprintf(out,cap,"Cancelling the download...");}else if(state()==State::Downloading){auto total=total_bytes.load();auto done=completed_bytes.load();if(total){char text[160];std::snprintf(text,sizeof(text),"Downloading: %llu / %llu MiB (%u%%)",static_cast<unsigned long long>(done/(1024*1024)),static_cast<unsigned long long>(total/(1024*1024)),static_cast<unsigned>((done*100)/total));std::snprintf(out,cap,"%s",text);}}}
 std::size_t candidate_count(){std::lock_guard<std::mutex> lock(state_mutex);return items.size();}
-bool candidate(std::size_t i,Candidate*out){if(!out)return false;std::lock_guard<std::mutex> lock(state_mutex);if(i>=items.size())return false;std::snprintf(out->name,sizeof(out->name),"%s",items[i].name.c_str());out->size=items[i].size;return true;}
+bool candidate(std::size_t i,Candidate*out){if(!out)return false;std::lock_guard<std::mutex> lock(state_mutex);if(i>=items.size())return false;std::snprintf(out->name,sizeof(out->name),"%s",items[i].name.c_str());out->size=items[i].size;out->fit=items[i].fit;return true;}
 bool search(const char *query){poll();std::lock_guard<std::mutex> job_lock(job_mutex);if(!query||state()==State::Searching||state()==State::Loading||state()==State::Downloading||worker_thread)return false;std::string value(query);if(value.size()<2||value.size()>96){set_status("Enter at least two characters for model search.");current.store(State::Failed);return false;}for(unsigned char c:value)if(!(std::isalnum(c)||std::isspace(c)||c=='-'||c=='_'||c=='.'||c=='+')){set_status("Use letters, numbers, spaces, dots, dashes or underscores.");current.store(State::Failed);return false;}worker_query=value;{std::lock_guard<std::mutex> lock(state_mutex);items.clear();}current.store(State::Searching);set_status("Searching public GGUF repositories...");return start();}
 bool browse(const char *repo){poll();std::lock_guard<std::mutex> job_lock(job_mutex);if(!repo||state()==State::Loading||state()==State::Downloading||worker_thread)return false;std::string value(repo);if(!safe_repo(value)){set_status("Enter a repository as owner/name.");current.store(State::Failed);return false;}worker_repo=value;{std::lock_guard<std::mutex> lock(state_mutex);items.clear();}current.store(State::Loading);set_status("Connecting to Hugging Face over HTTPS...");return start();}
 bool download(std::size_t i){poll();std::lock_guard<std::mutex> job_lock(job_mutex);if(state()!=State::Ready||worker_thread)return false;worker_preset=-1;{std::lock_guard<std::mutex> lock(state_mutex);if(i>=items.size())return false;worker_index=i;}completed_bytes.store(0);total_bytes.store(items[i].size);current.store(State::Downloading);set_status("Starting model download...");return start();}

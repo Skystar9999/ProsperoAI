@@ -36,10 +36,23 @@ disagree about what to do next.
   and ZIP; read `docs/BUILDING.md` first.
 - A build that links is not a build that runs. Check the NEEDED list (`readelf -d`) and the
   program headers against a working build before deploying.
+- For backend feature verification on a running test title, call the app's HTTP API directly
+  at `http://<PS5-IP>:11434/`; Bonsai, generation and media checks do not require Remote Play
+  input or UI navigation. Use Remote Play only when the task specifically requires visual UI
+  verification or the title must be launched through the console UI. Never treat a successful
+  HTTP response from P5 Manager as proof that the app backend is running.
 - A user request to implement, debug or benchmark on the console authorizes the necessary
   test deployments, payloads, launches, closing/replacing the relevant test titles and
   cleanup of files created for that task. Continue through repeated test iterations
   without asking for approval at each step; report the result and console state.
+- Standing user authorization: upload and install task-related builds, models and
+  payloads on the console's designated test titles without asking again. This includes
+  FTP updates, stopping the test title, verifying it is unmounted, restoring its mount,
+  launching it, running benchmarks and restoring the verified test build. Repeated
+  iterations and a resumed conversation do not require another deployment confirmation.
+  Use existing approved `tools/ps5ctl.py` execution rules where applicable. If an
+  environment approval is still required, request only that execution approval and
+  explain its source; do not add a separate conversational confirmation.
 - Ask separately before rebooting, deleting unrelated data, or changing the main title
   `PPSA99004`. Sandbox/network execution approvals are still enforced by the environment.
 

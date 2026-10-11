@@ -19,10 +19,12 @@ class HttpApiTests(unittest.TestCase):
         if not compiler or not (ROOT / ".deps/llama.cpp/vendor/nlohmann/json.hpp").exists():
             raise unittest.SkipTest("C++ compiler and make deps required")
         subprocess.run([compiler, "-std=c++20", "-O1", "-pthread", "-ffunction-sections", "-fdata-sections",
+                        "-DPROSPERO_SESSION_TEST",
                         '-DPROSPERO_WEB_ASSET_ROOT="'+str(ROOT / 'assets/web')+'/"',
-                        "-Wl,--gc-sections", "-I"+str(ROOT / "vulkan"), "-I"+str(ROOT / "include"),
+                        '-DPROSPERO_SETTINGS_PATH="'+str(tmp / "runtime.cfg")+'"', "-Wl,--gc-sections", "-I"+str(ROOT / "vulkan"), "-I"+str(ROOT / "include"),
                         "-I"+str(ROOT / ".deps/llama.cpp/vendor"),
-                        str(ROOT / "tests/http_api_harness.cpp"), "-o", str(cls.binary)], check=True)
+                        str(ROOT / "tests/http_api_harness.cpp"), str(ROOT / "src/session_store.cpp"),
+                        "-o", str(cls.binary)], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -40,6 +42,63 @@ class HttpApiTests(unittest.TestCase):
                                       input="\r\n".join(lines).encode()+b"\r\n\r\n"+payload)
         head, data = wire.split(b"\r\n\r\n", 1)
         return head.decode(), data.decode()
+
+    def test_runtime_settings_round_trip(self):
+        config = Path(self.scratch.name) / 'runtime.cfg'
+        config.write_text('version=2\nstyle=2\ntokens=192\ntheme=1\n')
+        header, body = self.request('/api/settings/runtime', body={'context':'32k', 'kv':'auto', 'thinking':True})
+        self.assertIn('200 OK', header)
+        expected = {'context':'32k', 'kv':'auto', 'thinking':True}
+        self.assertEqual(json.loads(body), expected)
+        self.assertIn('style=2\ntokens=192\ntheme=1\n', config.read_text())
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
+        for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
+            self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
+            self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
+        self.assertIn('401 Unauthorized', self.request('/api/settings/runtime', key='secret')[0])
+        self.request('/api/settings/runtime', body={'context':'auto','kv':'auto','thinking':False})
+
+    def test_conversations_share_the_native_session_store(self):
+        conversation = {'id':'web-sync-fixture','title':'Shared from web', 'model':'tiny.gguf',
+                        'modelName':'Tiny model','purpose':'text-to-text',
+                        'messages':[{'role':'user','content':'Continue on the console'},
+                                    {'role':'assistant','content':'This is the shared answer.'}]}
+        header, saved = self.request('/api/conversations', body=conversation)
+        self.assertIn('201 Created', header)
+        record = json.loads(saved)
+        self.assertEqual(record['message_count'], 2)
+        catalog = json.loads(self.request('/api/conversations')[1])['data']
+        self.assertTrue(any(item['id'] == conversation['id'] for item in catalog))
+        detail = json.loads(self.request('/api/conversations/' + conversation['id'])[1])
+        self.assertEqual(detail['title'], conversation['title'])
+        self.assertEqual(detail['messages'], conversation['messages'])
+        self.assertIn('200 OK', self.request('/api/conversations/' + conversation['id'], method='DELETE')[0])
+        self.assertIn('404 Not Found', self.request('/api/conversations/' + conversation['id'])[0])
+        self.assertIn('401 Unauthorized', self.request('/api/conversations', key='secret')[0])
+
+    def test_request_context_does_not_replace_shared_settings(self):
+        shared = {'context': '32k', 'kv': 'auto', 'thinking': True}
+        self.request('/api/settings/runtime', body=shared)
+        try:
+            for route, body in [
+                ('/v1/chat/completions', {'model': 'tiny.gguf', 'context_tokens': 16384,
+                  'messages': [{'role': 'user', 'content': 'context-settings'}]}),
+                ('/api/generate', {'model': 'tiny.gguf', 'prompt': 'context-settings',
+                  'options': {'num_ctx': 16384}}),
+                ('/api/chat', {'model': 'tiny.gguf', 'options': {'num_ctx': 16384},
+                  'messages': [{'role': 'user', 'content': 'context-settings'}]}),
+            ]:
+                _, wire = self.request(route, body)
+                data = json.loads(wire)
+                content = (data['choices'][0]['message']['content'] if 'choices' in data
+                           else data.get('response') or data['message']['content'])
+                self.assertEqual(content, '32768:16384')
+                self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), shared)
+            _, wire = self.request(body={'model': 'tiny.gguf',
+                                  'messages': [{'role': 'user', 'content': 'context-settings'}]})
+            self.assertEqual(json.loads(wire)['choices'][0]['message']['content'], '32768:0')
+        finally:
+            self.request('/api/settings/runtime', body={'context': 'auto', 'kv': 'auto', 'thinking': False})
 
     def test_models_and_selection(self):
         _, body = self.request("/v1/models")
@@ -116,6 +175,11 @@ class HttpApiTests(unittest.TestCase):
         progress = json.loads(body)
         self.assertEqual((progress["completed"], progress["total"]), (50, 100))
 
+    def test_browse_candidate_reports_fit(self):
+        _, body = self.request("/api/models/download")
+        items = json.loads(body)["items"]
+        self.assertEqual(items[0]["fit"], "tight")
+
     def test_cancel_download(self):
         head, body = self.request("/api/models/download", method="DELETE")
         self.assertIn("409 Conflict", head)
@@ -139,7 +203,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(frames[-1], "[DONE]")
         chunks = [json.loads(frame) for frame in frames[:-1]]
         content = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks if c["choices"])
-        self.assertEqual(content, "Hello čau 😀")
+        self.assertEqual(content, "Hello café 😀")
         self.assertEqual(chunks[-2]["choices"][0]["finish_reason"], "length")
         self.assertEqual(chunks[-1]["choices"], [])
         self.assertEqual(chunks[-1]["usage"]["completion_tokens"], 4)
@@ -195,7 +259,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("200", head)
 
     def test_nested_text_parts_and_escaped_content(self):
-        text = 'quoted " and } braces čau 😀'
+        text = 'quoted " and } braces café 😀'
         body = {"model":"tiny.gguf", "messages":[{"role":"user", "content":[{"type":"text","text":text}]},
                                                   {"role":"user", "content":"echo"}]}
         _, wire = self.request(body=body)

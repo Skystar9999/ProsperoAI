@@ -162,7 +162,7 @@ int main(int argc, char **argv)
     char grammar_output[4096];
     assert(gpt_runtime_generate(&grammar_message, 1, grammar_settings, grammar_output,
                                 sizeof(grammar_output), &stats, nullptr) == 1);
-    assert(resident_tokens.empty());
+    assert(previous_tokens.empty());
     generate(base, stats);
     assert(stats.reused_tokens == 0);
     // Decode errors must invalidate partial memory before the next request.
@@ -173,7 +173,7 @@ int main(int argc, char **argv)
     char output[4096];
     assert(gpt_runtime_generate(&message, 1, settings, output, sizeof(output), &stats, nullptr) ==
            1);
-    assert(resident_tokens.empty() && llama_memory_seq_pos_max(llama_get_memory(context), 0) == -1);
+    assert(previous_tokens.empty() && llama_memory_seq_pos_max(llama_get_memory(context), 0) == -1);
     generate(base, stats);
     assert(stats.reused_tokens == 0);
     // Full chat templates can retokenize a generated reply at message joins.
@@ -194,7 +194,7 @@ int main(int argc, char **argv)
     chat_fixture = false;
     // Model changes discard the cache along with the context.
     assert(gpt_runtime_select_model(1));
-    assert(context == nullptr && resident_tokens.empty());
+    assert(context == nullptr && previous_tokens.empty());
     load_fixture();
     generate(base, stats);
     assert(stats.reused_tokens == 0);
@@ -211,13 +211,13 @@ int main(int argc, char **argv)
     files.push_back({"removed.gguf", model_path});
     selected = files.size() - 1;
     gpt_runtime_refresh_models();
-    assert(context == nullptr && resident_tokens.empty() && selected == 0);
+    assert(context == nullptr && previous_tokens.empty() && selected == 0);
     load_fixture();
     // Exceptions from a progress callback cannot leave a reusable context.
     auto throws = +[](const char *) { throw std::runtime_error("test callback failure"); };
     assert(gpt_runtime_generate(&message, 1, settings, output, sizeof(output), &stats, throws) ==
            1);
-    assert(context == nullptr && resident_tokens.empty());
+    assert(context == nullptr && previous_tokens.empty());
     release_model();
     llama_backend_free();
     std::puts("Actual llama.cpp cached/cold output and failure recovery checks passed");
