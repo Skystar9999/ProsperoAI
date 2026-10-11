@@ -548,3 +548,103 @@ bounded residency move to the subsequent draft PR.
 - Final host validation: lint passed; all 50 tracked tests passed with one opt-in real-model test
   skipped; the release ZIP contains 121 entries, the ELF has entry `0x120`, 14 program
   headers and 15 NEEDED libraries, and `self-updater.elf` is present.
+
+## 2026-10-11 — extended output and context limits
+
+- Replaced the 4096-token output cap and 16K request-context cap with shared validated
+  limits. The current API/native ceiling is 131072 output tokens and 262144 context tokens;
+  response/session storage is dynamic with a 2 MiB byte guard.
+- Host HTTP tests, native controller/session tests, lint and the PS5 Vulkan folder build pass.
+- On `PPSA99023`, MiniCPM5 generated 32712 completion tokens from a 56-token prompt,
+  filling a 32768-token context and returning `finish_reason: length`. This exceeded both
+  the old 4096-token and 32 KiB response limits without a crash or truncation.
+- Added `Qwen3.5-0.8B-Q4_0.gguf` (563036064 bytes, SHA-256
+  `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`) as the small
+  long-context probe. It loaded at `context_tokens: 262144` and returned the requested
+  six-token smoke response. The first 131072-output request ended normally after one token
+  because the model selected EOS, so a full 128K output is not yet verified.
+- An initial 2 MiB fixed native streaming buffer caused a pre-main/early-start failure;
+  moving that buffer to heap storage restored a clean launch and HTTP service. No reboot.
+
+## 2026-10-11 — auto output fill, VRAM-derived fit estimate, web media rendering
+
+- An omitted `max_tokens`/`num_predict` (API) or "Auto" `output_limit` (native Response
+  length, now the default) fills the remaining context instead of stopping at a fixed
+  512-token default; the existing remaining-context clamp and EOS stop still bound it.
+  Native UI gained an "Auto" entry on Response length, mirroring Context length's.
+- On `PPSA99023`, Qwen3.5-0.8B with no `max_tokens` generated 8151 completion tokens into an
+  8192-token context (`finish_reason: length`, `total_tokens: 8192`), and separately 32726
+  into a 32768-token context (`total_tokens: 32768`) — the auto fill tracks whatever context
+  is requested, not a fixed ceiling.
+- `prospero_model_download::estimate_fit` now derives its comfortable/ceiling thresholds from
+  the Vulkan backend's actually reported heap (`gpt_runtime_vulkan_heap_bytes`, forwarded
+  through the text/media router) instead of a hardcoded figure, falling back to the known
+  11,712 MiB RADV figure when no device is registered (host tests).
+- Added a `GET /download0/<path>` HTTP route, gated by the same bearer-key check as the rest
+  of the API, serving only the fresh-output and archived-media paths the runtime itself
+  writes (mirrors the native app's own `media_path`/`refresh_images` allowlist); rejects any
+  other path or one containing `..` with 404. Verified on `PPSA99023`: fetching a freshly
+  generated SD-Turbo `.tga` returned the expected 512x512x4+18-byte file with a correct
+  header, and a Stable Audio `.wav` returned a valid RIFF file; three traversal/disallowed
+  paths were rejected with 404.
+- The web UI previously showed the raw `/download0/...` path as text with no way to view,
+  play or download the result (the native app already renders these inline). `app.js` now
+  detects the same markers, strips them from the visible text, and fetches the file through
+  the new route: a `.tga` is decoded client-side (plain 32-bit uncompressed TGA, no new
+  dependency) onto a canvas with a PNG download link; a `.wav` gets an `<audio controls>`
+  element and a download link. CSP's `img-src`/`media-src` extended to allow `blob:`.
+- Regression after all of the above, on `PPSA99023`: Bonsai answered correctly (bounded
+  `max_tokens`), SD-Turbo completed in 29.7 s, Stable Audio in 153.1 s, matching prior
+  baselines. Host lint and all 55 tests pass; the PS5 Vulkan folder build links cleanly.
+
+## 2026-10-11 — web UI fixes: empty-draft history, mobile history drawer, 256k settings
+
+- `/api/settings/runtime`'s POST handler validated `context` against a 7-entry `{auto..128k}`
+  table while its `values[]` already had an 8th (262144) entry from the 131072/262144 change
+  above; `"256k"` was silently rejected. Added the missing option and loop bound; a host
+  test now round-trips `256k` through the settings API. The web Settings page's context
+  `<select>` was missing the matching `<option>` too.
+- Starting a web conversation without sending a message no longer appears in history or
+  syncs to the console: `newConversation()` used to unshift it into the saved list and
+  persist it immediately, cluttering history with empty "New conversation" entries. The
+  conversation now only joins the list (and gets synced) once its first message is sent.
+- The mobile conversation drawer left history-only elements (the "+" new-conversation
+  button) behind a 15%-wide sliver with no way back to the chat except re-finding the
+  header's hamburger; switched it to a full-screen drawer with its own visible close
+  button, and "+" now closes the drawer after creating the conversation.
+- Verified server-side conversation sync directly (create-with-first-message POST, catalog
+  GET, detail GET, delete) against `PPSA99023`; unaffected by the client-side timing change
+  since the sync endpoint itself was not touched. No browser automation tool was available
+  in this environment to click through the page itself. Host lint and all 55 tests pass.
+
+## 2026-10-11 — mobile layout review via headless Chromium against PPSA99023
+
+- No browser automation tool was connected in this environment, so the web UI was actually
+  rendered and screenshotted at a 390x844 mobile viewport with a local headless Chromium
+  driven over its own DevTools protocol directly against `PPSA99023`'s HTTP server, rather
+  than inferred from CSS alone.
+- Found and fixed: the Models page's search input and type filters stayed in one flex row
+  on mobile (only `gap` was overridden there), collapsing the search box to an unusable
+  sliver next to wrapped filter pills; now stacks in a column. The chat header's Back
+  button, history toggle, title and model chip wrapped unpredictably across the same row;
+  reordered with flex `order` into back+toggle, then a full-width title row, then the model
+  chip, each on its own line.
+- Re-screenshotted after each fix to confirm, then exercised an actual message round trip
+  (title updates from the real first message, response renders, "Completed" status shows)
+  and a simulated long conversation (message bubbles wrap correctly, `#messages` scrolls
+  independently of the fixed header/composer, auto-scroll-to-bottom works). Welcome and
+  Models card/list layouts were already sound on mobile. Host lint passes.
+
+## 2026-10-11 — raised the HTTP server's hard connection cap
+
+- The web client's own cold page load (index.html, app.css, app.js, 3 fonts, plus the
+  immediate `/v1/models`, `/api/conversations` and `/api/models/download` calls) routinely
+  opens more concurrent connections than the server's hard cap of 4, so "Conversation sync
+  unavailable: Too many active connections." could appear on a normal load, not only under
+  the heavy automated testing above. Raised the cap (and the matching listen backlog) from
+  4 to 8; each connection's own 8 MiB thread stack is ordinary system RAM, not the
+  constrained Vulkan heap, so this does not compete with model/KV budgets.
+- Verified on `PPSA99023`: 8 concurrent `/v1/models` requests all returned 200 (previously
+  4 would have been rejected), and a realistic cold-load burst (the 6 static assets plus
+  `/v1/models` and `/api/conversations`) all succeeded concurrently. Host lint and all 55
+  tests pass.

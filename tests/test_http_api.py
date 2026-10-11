@@ -52,6 +52,11 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(json.loads(body), expected)
         self.assertIn('style=2\ntokens=192\ntheme=1\n', config.read_text())
         self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
+        header, body = self.request('/api/settings/runtime', body={'context':'256k', 'kv':'auto', 'thinking':True})
+        self.assertIn('200 OK', header)
+        expected = {'context':'256k', 'kv':'auto', 'thinking':True}
+        self.assertEqual(json.loads(body), expected)
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
         for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
             self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
             self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
@@ -121,30 +126,38 @@ class HttpApiTests(unittest.TestCase):
         for route in ["/api/generate", "/api/chat"]:
             body = {"model": "tiny.gguf", "prompt": "limits",
                     "messages": [{"role": "user", "content": "limits"}],
-                    "options": {"num_predict": 4096, "num_ctx": 16384}}
+                    "options": {"num_predict": 131072, "num_ctx": 262144}}
             _, response = self.request(route, body)
             data = json.loads(response)
-            self.assertEqual(data.get("response") or data["message"]["content"], "4096:16384")
+            self.assertEqual(data.get("response") or data["message"]["content"], "131072:262144")
+            body["options"] = {"num_predict": 131073, "num_ctx": 262145}
+            _, response = self.request(route, body)
+            data = json.loads(response)
+            self.assertEqual(data.get("response") or data["message"]["content"], "131072:262144")
             body["prompt"] = "long"
             body["messages"][0]["content"] = "long"
             _, response = self.request(route, body)
             data = json.loads(response)
             self.assertEqual(len(data.get("response") or data["message"]["content"]), 24000)
-        _, response = self.request(body={"model": "tiny.gguf", "max_tokens": 4096, "context_tokens": 16384,
+        _, response = self.request(body={"model": "tiny.gguf", "max_tokens": 131072, "context_tokens": 262144,
                                        "messages": [{"role": "user", "content": "limits"}]})
-        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "4096:16384")
+        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "131072:262144")
+        header, response = self.request(body={"model": "tiny.gguf", "max_tokens": 131073,
+                                             "messages": [{"role": "user", "content": "limits"}]})
+        self.assertIn("400 Bad Request", header)
+        self.assertEqual(json.loads(response)["error"]["code"], "invalid_max_tokens")
 
-    def test_context_validation_and_preserved_defaults(self):
-        for value in [0, -1, 16385, "8192"]:
+    def test_context_validation_and_auto_output_default(self):
+        for value in [0, -1, 262145, "8192"]:
             header, response = self.request(body={"model": "tiny.gguf", "context_tokens": value,
                                                  "messages": [{"role": "user", "content": "limits"}]})
             self.assertIn("400 Bad Request", header)
             self.assertEqual(json.loads(response)["error"]["code"], "invalid_context_tokens")
         _, response = self.request(body={"model": "tiny.gguf",
                                        "messages": [{"role": "user", "content": "limits"}]})
-        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "512:0")
+        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "131072:0")
         _, response = self.request("/api/generate", {"model": "tiny.gguf", "prompt": "limits"})
-        self.assertEqual(json.loads(response)["response"], "512:0")
+        self.assertEqual(json.loads(response)["response"], "131072:0")
 
     def test_public_ui_preserves_private_api(self):
         header, body = self.request("/", key="private")

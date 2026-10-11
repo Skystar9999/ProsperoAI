@@ -12,6 +12,7 @@
 #include "kv_budget.hpp"
 #include "prefix_reuse.hpp"
 #include "runtime_settings.hpp"
+#include "generation_limits.hpp"
 #include "llama.h"
 #include "ggml-backend.h"
 #include <algorithm>
@@ -272,6 +273,13 @@ const char *gpt_runtime_name() { return gpt_runtime_model_name(gpt_runtime_selec
 const char *gpt_runtime_backend() { return "llama.cpp Vulkan / RADV"; }
 const char *gpt_runtime_purpose() { return "text-to-text"; }
 bool gpt_runtime_context_full() { std::lock_guard<std::mutex> lock(runtime_mutex); return context_full; }
+std::uint64_t gpt_runtime_vulkan_heap_bytes() {
+    auto *device = ggml_backend_dev_by_name("Vulkan0");
+    if (!device) return 0;
+    size_t free_bytes = 0, total_bytes = 0;
+    ggml_backend_dev_memory(device, &free_bytes, &total_bytes);
+    return total_bytes;
+}
 bool gpt_runtime_select_model(unsigned i) {
     std::lock_guard<std::mutex> lock(runtime_mutex);
     scan_models();
@@ -318,8 +326,12 @@ int gpt_runtime_generate(const gpt_runtime_message_t *messages, unsigned count,
             unsigned index = static_cast<unsigned>(found - files.begin());
             if (index != selected) { release_model(); selected = index; }
         }
-        if (settings.context_tokens && (settings.context_tokens < 512 || settings.context_tokens > 16384)) {
-            std::snprintf(output, capacity, "Context window must be between 512 and 16384 tokens."); return 1;
+        if (settings.context_tokens &&
+            (settings.context_tokens < 512 ||
+             settings.context_tokens > prospero_generation::MaxContextTokens)) {
+            std::snprintf(output, capacity,
+                          "Context window must be between 512 and 262144 tokens.");
+            return 1;
         }
         configure_context(settings.context_tokens ? settings.context_tokens : settings.context_length, settings.kv_cache);
         if (!prepare()) { std::snprintf(output, capacity, "Unable to load a GGUF model on Vulkan."); return 1; }
@@ -353,7 +365,12 @@ int gpt_runtime_generate(const gpt_runtime_message_t *messages, unsigned count,
         const auto *vocab = llama_model_get_vocab(model);
         int n = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, !minicpm5, true);
         if (n <= 0) return 1;
-        unsigned limit = std::min(settings.max_output_tokens ? settings.max_output_tokens : 128U, 4096U);
+        // No requested limit means fill the remaining context, like an unset num_predict
+        // elsewhere; the clamp below still bounds it to what the context actually has left.
+        unsigned limit = std::min(
+            settings.max_output_tokens ? settings.max_output_tokens
+                                       : prospero_generation::MaxOutputTokens,
+            prospero_generation::MaxOutputTokens);
         if ((unsigned)n + 1 >= llama_n_ctx(context)) {
             context_full = true;
             std::snprintf(output, capacity, "Conversation exceeds this model's context window."); return 1;

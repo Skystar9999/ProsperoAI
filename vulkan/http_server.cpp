@@ -16,6 +16,7 @@
 #include "gpt_runtime.hpp"
 #include "runtime_settings.hpp"
 #include "session_store.hpp"
+#include "generation_limits.hpp"
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
 #include "model_downloader_ps5.hpp"
 #endif
@@ -30,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <algorithm>
 #include <cctype>
 #include <stdexcept>
 #include <memory>
@@ -88,10 +90,12 @@ constexpr int kSolSocket = 0xffff;
 constexpr int kSoReuseAddr = 0x0004;
 
 constexpr int kNetPoolSize = 4 * 1024 * 1024;
-constexpr int kListenBacklog = 4;
+constexpr int kListenBacklog = 8;
+// A page load alone opens several concurrent requests (assets, fonts, model/settings/sync
+// polls); matches kListenBacklog so a burst that fills the backlog can actually be served.
+constexpr std::size_t kMaxActiveConnections = 8;
 constexpr std::size_t kRequestCapacity = 256 * 1024;
-constexpr std::size_t kResponseTextCapacity = 32768;
-constexpr std::size_t kResponseCapacity = 6 * kResponseTextCapacity + 4096;
+constexpr std::size_t kResponseTextCapacity = prospero_generation::MaxOutputBytes;
 unsigned short kHttpServerPort = 11434;
 
 // FreeBSD sockaddr_in layout: 1-byte length, 1-byte family, big-endian
@@ -421,8 +425,9 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
                       "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
                       "X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\n"
                       "Content-Security-Policy: default-src 'self'; style-src 'self'; script-src "
-                      "'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; "
-                      "frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
+                      "'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; "
+                      "media-src 'self' blob:; frame-ancestors 'none'\r\nConnection: "
+                      "close\r\n\r\n",
                       asset.type, size);
         send_all(api, sock, header, std::strlen(header));
         char buffer[16384];
@@ -521,8 +526,9 @@ unsigned request_option(const char *body, const char *key, unsigned fallback, un
         return fallback;
     char *end = nullptr;
     const long parsed = std::strtol(value, &end, 10);
-    return end != value && parsed > 0 && parsed <= maximum ? static_cast<unsigned>(parsed)
-                                                           : fallback;
+    if (end == value || parsed <= 0)
+        return fallback;
+    return static_cast<unsigned>(std::min<long>(parsed, maximum));
 }
 
 void handle_generate(const NetApi &api, int sock, const char *request_body)
@@ -537,32 +543,35 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
         return;
     }
     const gpt_runtime_message_t messages[1] = {{"user", prompt}};
-    char response_text[kResponseTextCapacity] = {};
-    const unsigned max_tokens = request_option(request_body, "num_predict", 512, 4096);
-    const unsigned context_tokens = request_option(request_body, "num_ctx", 0, 16384);
+    std::vector<char> response_text(kResponseTextCapacity);
+    const unsigned max_tokens = request_option(request_body, "num_predict",
+                                               prospero_generation::MaxOutputTokens,
+                                               prospero_generation::MaxOutputTokens);
+    const unsigned context_tokens = request_option(request_body, "num_ctx", 0,
+                                                   prospero_generation::MaxContextTokens);
     gpt_runtime_stats_t stats{};
-    const bool ok = run_generation(messages, 1, response_text, sizeof(response_text), max_tokens,
-                                   &stats, model, context_tokens);
+    const bool ok = run_generation(messages, 1, response_text.data(), response_text.size(),
+                                   max_tokens, &stats, model, context_tokens);
 
     char created_at[32];
     iso8601_now(created_at, sizeof(created_at));
-    char body[kResponseCapacity];
-    std::snprintf(body, sizeof(body), "{\"model\":\"%s\",\"created_at\":\"%s\",\"response\":\"",
-                  model, created_at);
-    json_append_escaped(body, sizeof(body), ok ? response_text : "");
-    char timing[512];
     const auto decode_us = stats.elapsed_microseconds >= stats.prefill_microseconds
                                ? stats.elapsed_microseconds - stats.prefill_microseconds
                                : 0;
-    std::snprintf(timing, sizeof(timing),
-                  "\",\"done\":true,\"eval_count\":%u,\"prompt_eval_count\":%u,"
-                  "\"eval_duration\":%llu,\"prompt_eval_duration\":%llu%s}",
-                  stats.generated_tokens, stats.prompt_tokens,
-                  static_cast<unsigned long long>(decode_us) * 1000,
-                  static_cast<unsigned long long>(stats.prefill_microseconds) * 1000,
-                  ok ? "" : ",\"error\":\"generation failed\"");
-    std::strncat(body, timing, sizeof(body) - std::strlen(body) - 1);
-    send_json(api, sock, body);
+    nlohmann::json body = {{"model", model},
+                           {"created_at", created_at},
+                           {"response", ok ? response_text.data() : ""},
+                           {"done", true},
+                           {"done_reason", stats.output_limit_reached ? "length" : "stop"},
+                           {"eval_count", stats.generated_tokens},
+                           {"prompt_eval_count", stats.prompt_tokens},
+                           {"eval_duration", static_cast<unsigned long long>(decode_us) * 1000},
+                           {"prompt_eval_duration",
+                            static_cast<unsigned long long>(stats.prefill_microseconds) * 1000}};
+    if (!ok)
+        body["error"] = "generation failed";
+    const auto serialized = body.dump();
+    send_json(api, sock, serialized.c_str());
 }
 
 void handle_chat(const NetApi &api, int sock, const char *request_body)
@@ -593,23 +602,27 @@ void handle_chat(const NetApi &api, int sock, const char *request_body)
         return;
     }
 
-    char response_text[kResponseTextCapacity] = {};
-    const bool ok = run_generation(messages, message_count, response_text, sizeof(response_text),
-                                   request_option(request_body, "num_predict", 512, 4096), nullptr,
-                                   model, request_option(request_body, "num_ctx", 0, 16384));
+    std::vector<char> response_text(kResponseTextCapacity);
+    gpt_runtime_stats_t stats{};
+    const bool ok = run_generation(
+        messages, message_count, response_text.data(), response_text.size(),
+        request_option(request_body, "num_predict", prospero_generation::MaxOutputTokens,
+                       prospero_generation::MaxOutputTokens),
+        &stats, model,
+        request_option(request_body, "num_ctx", 0, prospero_generation::MaxContextTokens));
 
     char created_at[32];
     iso8601_now(created_at, sizeof(created_at));
-    char body[kResponseCapacity];
-    std::snprintf(body, sizeof(body),
-                  "{\"model\":\"%s\",\"created_at\":\"%s\",\"message\":{\"role\":\"assistant\","
-                  "\"content\":\"",
-                  model, created_at);
-    json_append_escaped(body, sizeof(body), ok ? response_text : "");
-    std::strncat(body,
-                 ok ? "\"},\"done\":true}" : "\"},\"done\":true,\"error\":\"generation failed\"}",
-                 sizeof(body) - std::strlen(body) - 1);
-    send_json(api, sock, body);
+    nlohmann::json body = {
+        {"model", model},
+        {"created_at", created_at},
+        {"message", {{"role", "assistant"}, {"content", ok ? response_text.data() : ""}}},
+        {"done", true},
+        {"done_reason", stats.output_limit_reached ? "length" : "stop"}};
+    if (!ok)
+        body["error"] = "generation failed";
+    const auto serialized = body.dump();
+    send_json(api, sock, serialized.c_str());
 }
 
 #include "openai_api.inc"
@@ -897,14 +910,15 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                          "Expected a settings object.");
             return;
         }
-        constexpr const char *contexts[] = {"auto", "4k", "8k", "16k", "32k", "64k", "128k"};
-        constexpr unsigned values[] = {0, 4096, 8192, 16384, 32768, 65536, 131072};
+        constexpr const char *contexts[] = {"auto", "4k",  "8k",  "16k",
+                                            "32k",  "64k", "128k", "256k"};
+        constexpr unsigned values[] = {0, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
         for (auto it = j.begin(); it != j.end(); ++it)
         {
             bool valid = false;
             if (it.key() == "context" && it.value().is_string())
             {
-                for (unsigned i = 0; i < 7; ++i)
+                for (unsigned i = 0; i < 8; ++i)
                     if (it.value() == contexts[i])
                     {
                         p.context = values[i];
@@ -945,6 +959,60 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
         {"thinking",
          p.thinking}}.dump();
     send_json(api, sock, response.c_str());
+}
+
+// Same allowlist the native app uses to recognize a generated-media reference inside a
+// message's own text (src/native_app.cpp:media_path/refresh_images): no traversal, and only
+// the fresh-output or archived-media paths the runtime itself writes under /download0.
+bool media_path_allowed(const std::string &path)
+{
+    if (path.find("..") != std::string::npos)
+        return false;
+    static const char *prefixes[] = {
+        "/download0/ProsperoAI/sessions/", "/download0/ProsperoAI/work/image/",
+        "/download0/ProsperoAI/work/audio/", "/download0/ProsperoAI/work/voice/",
+        "/download0/prosperoai-image-", "/download0/prosperoai-audio.wav"};
+    for (const char *prefix : prefixes)
+        if (path.compare(0, std::strlen(prefix), prefix) == 0)
+            return true;
+    return false;
+}
+
+void handle_media_file(const NetApi &api, int sock, const char *path)
+{
+    if (!media_path_allowed(path))
+    {
+        send_status(api, sock, "404 Not Found", "text/plain", "Not found.");
+        return;
+    }
+    FILE *file = std::fopen(path, "rb");
+    if (!file)
+    {
+        send_status(api, sock, "404 Not Found", "text/plain", "Not found.");
+        return;
+    }
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    std::rewind(file);
+    const std::size_t path_length = std::strlen(path);
+    const bool is_wav = path_length >= 4 && std::strcmp(path + path_length - 4, ".wav") == 0;
+    if (size < 0 || size > 64 * 1024 * 1024)
+    {
+        std::fclose(file);
+        send_status(api, sock, "500 Internal Server Error", "text/plain", "Media unavailable.");
+        return;
+    }
+    char header[256];
+    std::snprintf(header, sizeof(header),
+                  "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
+                  "X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\nConnection: "
+                  "close\r\n\r\n",
+                  is_wav ? "audio/wav" : "application/octet-stream", size);
+    send_all(api, sock, header, std::strlen(header));
+    char buffer[16384];
+    for (std::size_t count; (count = std::fread(buffer, 1, sizeof(buffer), file)) != 0;)
+        send_all(api, sock, buffer, count);
+    std::fclose(file);
 }
 
 bool handle_conversations(const NetApi &api, int sock, const char *method, const char *path,
@@ -1048,7 +1116,7 @@ bool handle_conversations(const NetApi &api, int sock, const char *method, const
                 const std::string role = item["role"].get<std::string>();
                 const std::string content = item["content"].get<std::string>();
                 if ((role != "user" && role != "assistant") ||
-                    content.size() >= sizeof(prospero_session::Message{}.content))
+                    content.size() >= prospero_session::MessageBytes)
                 {
                     send_status(api, sock, "400 Bad Request", "application/json",
                                 "{\"error\":\"Message role or content length is invalid.\"}");
@@ -1057,7 +1125,7 @@ bool handle_conversations(const NetApi &api, int sock, const char *method, const
                 prospero_session::Message message{};
                 std::snprintf(message.role, sizeof(message.role), "%s", role.c_str());
                 std::snprintf(message.timestamp, sizeof(message.timestamp), "00:00");
-                std::memcpy(message.content, content.data(), content.size());
+                message.content = content;
                 messages.push_back(message);
             }
         }
@@ -1168,6 +1236,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_openai_chat(api, sock, body);
 #endif
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
+    else if (std::strcmp(method, "GET") == 0 && std::strncmp(path, "/download0/", 11) == 0)
+        handle_media_file(api, sock, path);
     else if (std::strncmp(path, "/api/conversations", 18) == 0 &&
              handle_conversations(api, sock, method, path, body))
         ;
@@ -1264,7 +1334,7 @@ void *server_worker(void *)
             else
                 ++it;
         }
-        if (connections.size() >= 4)
+        if (connections.size() >= kMaxActiveConnections)
         {
             openai_error(api, client_sock, "503 Service Unavailable", "server_busy",
                          "Too many active connections.");
