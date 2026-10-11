@@ -62,7 +62,7 @@ class MiniCPM5Tests(unittest.TestCase):
         models = json.loads((ROOT/'model-tools/presets.json').read_text())
         self.assertEqual([m['id'] for m in models[:3]], [
             'sd-turbo-fp16', 'stable-audio-open-small', 'kokoro-82m-fp16'])
-        self.assertEqual(models[-1]['id'], 'minicpm5-2b-q8-0.gguf')
+        self.assertEqual(models[3]['id'], 'minicpm5-2b-q8-0.gguf')
         header = (ROOT/'include/model_presets.hpp').read_text()
         self.assertLess(header.index('"mistral-7b-instruct'), header.index('"minicpm5-2b'))
         self.assertLess(header.index('"qwen3.5-9b'), header.index('"minicpm5-2b'))

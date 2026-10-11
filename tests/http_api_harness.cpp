@@ -5,6 +5,40 @@
 #include "../vulkan/http_server.cpp"
 #include <iostream>
 #include <iterator>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+extern "C"
+{
+    int sceKernelOpen(const char *path, int, int)
+    {
+        return open(path, O_RDONLY);
+    }
+    int sceKernelClose(int fd)
+    {
+        return close(fd);
+    }
+    int sceKernelGetdents(int fd, char *buffer, int size)
+    {
+        return static_cast<int>(syscall(SYS_getdents64, fd, buffer, size));
+    }
+    int sceKernelMkdir(const char *path, int mode)
+    {
+        return mkdir(path, static_cast<mode_t>(mode));
+    }
+    int sceKernelRmdir(const char *path)
+    {
+        return rmdir(path);
+    }
+    int sceKernelUnlink(const char *path)
+    {
+        return unlink(path);
+    }
+}
+
 static std::string input, wire;
 static std::size_t position;
 static unsigned current_model;
@@ -57,11 +91,16 @@ void status(char *output, std::size_t capacity)
 }
 std::size_t candidate_count()
 {
-    return 0;
+    return 1;
 }
-bool candidate(std::size_t, Candidate *)
+bool candidate(std::size_t index, Candidate *output)
 {
-    return false;
+    if (index != 0 || !output)
+        return false;
+    std::snprintf(output->name, sizeof(output->name), "fake-model.gguf");
+    output->size = 9ULL * 1024 * 1024 * 1024;
+    output->fit = Fit::Tight;
+    return true;
 }
 bool search(const char *)
 {
@@ -140,12 +179,14 @@ int gpt_runtime_generate(const gpt_runtime_message_t *messages, unsigned count,
               : last.find("Tool result for") == 0 ? "{\"content\":\"tool result received\"}"
                                                   : "{\"tool_calls\":[{\"name\":\"lookup\","
                                                     "\"arguments\":{\"query\":\"a}b\\\"c\"}}]}"
+        : last == "context-settings" ? std::to_string(settings.context_length) + ":" +
+                                           std::to_string(settings.context_tokens)
         : last == "limits" ? std::to_string(settings.max_output_tokens) + ":" +
                                  std::to_string(settings.context_tokens)
         : last == "long"           ? std::string(24000, 'x')
         : last == "selected-model" ? gpt_runtime_model_id(current_model)
         : last == "echo"           ? messages[0].content
-                                   : "Hello čau 😀";
+                                   : "Hello café 😀";
     std::snprintf(out, capacity, "%s", text.c_str());
     *stats = {};
     stats->prompt_tokens = 10;

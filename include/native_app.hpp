@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <string>
+#include <memory>
 #include <vector>
 #ifdef PROSPERO_HOST
 #include <pthread.h>
@@ -29,7 +30,8 @@ struct Model
 struct Preferences
 {
     unsigned style = 0, output_limit = 128;
-    unsigned context_limit = 0;
+    unsigned context_length = 0, kv_cache = 0;
+    bool thinking = false;
     unsigned theme = 0, accent = 0, volume = 35, text_size = 0;
     bool reduced_motion = false, high_contrast = false;
     std::string model_id;
@@ -58,11 +60,19 @@ enum class Activity
     Generating,
     Saving
 };
+struct SessionSearch
+{
+    std::string id;
+    std::uint64_t updated_us = 0;
+    unsigned message_count = 0;
+    std::shared_ptr<const std::string> text;
+};
 struct State
 {
     std::vector<Model> models;
     std::array<unsigned, 4> model_counts{}; // installed models per Capability
     std::vector<prospero_session::Record> sessions;
+    std::vector<SessionSearch> session_search;
     std::vector<prospero_session::Message> messages;
     std::vector<std::shared_ptr<const ImagePreview>> images;
     prospero_session::Record session{};
@@ -89,6 +99,7 @@ class App
     App &operator=(const App &) = delete;
     bool initialize();
     bool refresh_models();
+    bool sync_sessions();
     void poll();
     void shutdown();
     const State &state() const
@@ -124,7 +135,8 @@ class App
         Generate,
         Save,
         Preferences,
-        Play
+        Play,
+        SyncSessions
     };
     bool start(Job job);
     static void *worker(void *context);

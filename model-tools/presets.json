@@ -730,5 +730,21 @@
         "sha256": "c5415f8989bf88a8288f1b55a3cc371af53c07b0faa220a63bd7a990cfaba078"
       }
     ]
+  },
+  {
+    "id": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+    "name": "Ternary Bonsai 2 27B PTQ1_0",
+    "kind": 0,
+    "runtime": "prism",
+    "repository": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+    "revision": "b072e1d3b35a0a630cece372c2127528e0994386",
+    "files": [
+      {
+        "source": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        "path": "",
+        "size": 5946648928,
+        "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
+      }
+    ]
   }
 ]

@@ -316,6 +316,10 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
         std::vector<char> output(65536);
         gpt_runtime_stats_t stats{};
         gpt_runtime_settings_t settings{0, request.max_tokens};
+        const auto runtime = prospero_settings::get();
+        settings.context_length = runtime.context;
+        settings.kv_cache = prospero_settings::kv_name(runtime.kv);
+        settings.thinking = runtime.thinking;
         settings.model_id = request.model.c_str();
         settings.temperature = request.temperature;
         settings.context_tokens = request.context_tokens;

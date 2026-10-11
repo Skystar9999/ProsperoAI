@@ -43,3 +43,12 @@ bytes. Decode throughput was 93.46 and 89.95 tokens/s. A third request evaluated
 These measurements used the private performance integration with MiniCPM5 and
 prefix reuse. This independent controls PR preserves upstream defaults and
 is checked separately on the Linux host. See `docs/performance/2026-10-10/context-*`.
+
+## PR #15 integration
+
+Native and browser context controls use the shared saved runtime settings (Auto and
+4K–128K), with automatic KV precision and context-only recreation that retains model
+weights. Explicit API request overrides from PR #19 remain supported up to 16K and
+do not update saved preferences; omitted overrides use the shared setting.
+`/app0/context_size.txt` takes developer precedence. Prefix reuse and MiniCPM5 support
+are integrated from PR #17/#18; console acceptance is tracked in `VK_ACTIVE.md`.
