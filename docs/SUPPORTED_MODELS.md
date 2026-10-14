@@ -20,11 +20,39 @@ SHA-256 hashes during download.
 | [Kokoro 82M Vulkan](https://huggingface.co/blackbearreloaded/ProsperoAI-Kokoro-82M-FP16-PS5) | Speech | Curated preset | Verified; three valid WAV generations |
 | [Chatterbox 500M Q8_0](https://huggingface.co/audio-cpp/audio.cpp-gguf) | Speech, voice cloning | Curated preset | Verified; three valid WAV generations; 19 selectable languages |
 
-The table is the complete list of curated downloadable presets in the current build. ProsperoAI
-also lets you download standalone GGUF files. Other GGUF models may work when the bundled
-llama.cpp revision supports their architecture and tensor types, but they are not curated or
-verified here. Curated media presets include their required model files and use the image,
-audio, or speech runtime selected by the app.
+The table is the complete list of curated presets in this build. Curated media presets include
+their required model files and use the image, audio, or speech runtime already in the app.
+
+## Other GGUF text models
+
+ProsperoAI can also download and discover standalone `.gguf` text models. The pinned
+[llama.cpp revision](https://github.com/ggml-org/llama.cpp/tree/cb7934c52ca8710994b2ecc19775ebefcfdb8d01)
+includes loaders for the Llama, Qwen, Gemma, Phi, DeepSeek, Granite and other architectures,
+plus chat-template handling. This means many GGUF models from those families can be tried
+without adding model-specific app code. In Models, search for the model name or repository,
+open its GGUF files, and download one file. The app will discover it in the installed-model
+list. Examples include:
+
+| Model example | GGUF repository | Starting quantization |
+| --- | --- | --- |
+| Llama 3.1 8B Instruct | [bartowski/Meta-Llama-3.1-8B-Instruct-GGUF](https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF) | Q4_K_M |
+| Qwen3 8B | [Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF) | Q4_K_M |
+| Gemma 3 4B IT | [ggml-org/gemma-3-4b-it-GGUF](https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF) | Q4_K_M; text input only |
+| Phi-4 Mini Instruct | [bartowski/microsoft_Phi-4-mini-instruct-GGUF](https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF) | Q4_K_M |
+| DeepSeek R1 Distill Qwen 7B | [bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF) | Q4_K_M |
+
+These are compatibility candidates, not ProsperoAI-curated or PS5-verified presets. Start with a
+single-file Q4 GGUF and a moderate context; the model's architecture, tokenizer and chat template
+must be supported, its tensor types must have Vulkan kernels, and its weights plus context cache
+must fit the console's available memory. Very large models, multimodal GGUFs, embedding models,
+unsupported templates or quantizations can fail even when llama.cpp recognizes the architecture.
+The list is representative rather than exhaustive; many fine-tunes of a supported family may
+also work. See the pinned [architecture list](https://github.com/ggml-org/llama.cpp/blob/cb7934c52ca8710994b2ecc19775ebefcfdb8d01/src/llama-arch.cpp)
+and [chat-template list](https://github.com/ggml-org/llama.cpp/blob/cb7934c52ca8710994b2ecc19775ebefcfdb8d01/src/llama-chat.cpp).
+
+The curated presets were each exercised for three generation rounds on the test title; their
+results are in [the retained 3× test record](performance/2026-10-14/pr27-all-models-3x-final.json).
+That validation does not extend to the additional GGUF examples above.
 
 Image generation currently writes both PNG and TGA: PNG is the shareable/downloadable output,
 while the native conversation preview and archived image use TGA. Both formats are needed by
