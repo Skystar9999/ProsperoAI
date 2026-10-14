@@ -2,15 +2,21 @@
 
 ## 01.006.000
 
-- The default idle timeout before releasing a model is now five minutes.
-- Text and media inference now share the pinned upstream GGML/Vulkan runtime, with
-  PS5-specific Bonsai compatibility kept in guarded preparation scripts.
-- Native and web interfaces share conversation and runtime model state; model preparation
-  is deferred until a conversation starts, and backend residency is visible in both UIs.
-- Added DualSense and browser voice recording, custom Chatterbox voice management, and
-  selection from all 19 languages supported by the pinned Chatterbox tokenizer.
-- Fixed Chatterbox and ACE-Step model switching and several cross-modality memory and
-  runtime lifecycle issues.
+- Text, image, sound and speech generation now use one pinned upstream llama.cpp/GGML Vulkan
+  runtime. The release includes guarded PS5 support for Ternary Bonsai 2's ternary weights and
+  replaces Kokoro's old prebuilt OpenCL path with a source-built Vulkan runtime.
+- Added 12 ready-to-download model presets across all four modalities, including Ternary
+  Bonsai 2 27B, MiniCPM5, Granite, BoHF, Stable Audio 3, ACE-Step, Kokoro and Chatterbox.
+  See [Supported models](docs/SUPPORTED_MODELS.md) for the complete list.
+- Added Chatterbox voice cloning with 19 language choices, custom voice samples, and voice
+  recording from DualSense or a web browser.
+- PS5 and web now share conversations and runtime settings. Models prepare when a conversation
+  starts, both interfaces show actual backend residency, and model switching and memory release
+  work across text, image, audio and speech.
+- The PS5 Workspace places New conversation after the voice controls, and the default idle
+  timeout before releasing a model is now five minutes.
+- All 12 curated presets completed three generation rounds each on the test title, including
+  checks for model switching and valid generated outputs.
 
 ## 01.005.000
 
