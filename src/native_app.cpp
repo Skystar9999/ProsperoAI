@@ -74,7 +74,7 @@ void validate(Preferences &p)
         p.context_length = 0;
     p.kv_cache = 0; // Cache precision is always automatic.
     if (!prospero_settings::valid_idle_unload_minutes(p.idle_unload_minutes))
-        p.idle_unload_minutes = 2;
+        p.idle_unload_minutes = 5;
     p.kokoro_voice = std::min(p.kokoro_voice, 127U);
     p.chatterbox_voice = std::min(p.chatterbox_voice, 127U);
     if (!prospero_language::valid_chatterbox_language(p.chatterbox_language))
@@ -482,10 +482,9 @@ void App::set_preferences(Preferences preferences)
 {
     validate(preferences);
     if (!prospero_settings::set({preferences.context_length, preferences.output_limit,
-                                 preferences.kv_cache,
-                                 preferences.thinking, preferences.idle_unload_minutes,
-                                 preferences.kokoro_voice, preferences.chatterbox_voice,
-                                 preferences.chatterbox_language}))
+                                 preferences.kv_cache, preferences.thinking,
+                                 preferences.idle_unload_minutes, preferences.kokoro_voice,
+                                 preferences.chatterbox_voice, preferences.chatterbox_language}))
     {
         state_.status = "Could not save runtime settings.";
         return;
@@ -873,8 +872,7 @@ void App::generate()
         std::vector<gpt_runtime_message_t> context{{"system", kPrompts[result_.preferences.style]}};
         for (std::size_t i = result_.session.context_start; i < result_.messages.size(); ++i)
             context.push_back({result_.messages[i].role, result_.messages[i].content.c_str()});
-        auto settings =
-            gpt_runtime_settings_t{result_.preferences.style, runtime.output_limit};
+        auto settings = gpt_runtime_settings_t{result_.preferences.style, runtime.output_limit};
         settings.context_length = runtime.context;
         settings.kv_cache = prospero_settings::kv_name(runtime.kv);
         settings.thinking = runtime.thinking;

@@ -79,8 +79,13 @@ const char *gpt_runtime_model_purpose(unsigned)
     off_ui();
     return "text-to-text";
 }
-bool gpt_runtime_loaded_model(char *id, std::size_t ic, char *name, std::size_t nc) {
-    if(id && ic) id[0]=0; if(name && nc) name[0]=0; return false;
+bool gpt_runtime_loaded_model(char *id, std::size_t ic, char *name, std::size_t nc)
+{
+    if (id && ic)
+        id[0] = 0;
+    if (name && nc)
+        name[0] = 0;
+    return false;
 }
 bool gpt_runtime_select_model(unsigned index)
 {
@@ -200,6 +205,7 @@ int main(int argc, char **argv)
         settle(app);
         assert(app.state().models.size() == 500 && app.state().model_counts[0] == 500);
         assert(app.state().preferences.style == 2 && app.state().preferences.output_limit == 192);
+        assert(app.state().preferences.idle_unload_minutes == 5);
         assert(app.state().preferences.context_length == 0 &&
                app.state().preferences.kv_cache == 0 && !app.state().preferences.thinking);
         const auto before_refresh = app.state();
@@ -210,9 +216,10 @@ int main(int argc, char **argv)
         assert(app.state().selected_model == before_refresh.selected_model);
         assert(app.state().messages.size() == before_refresh.messages.size());
         assert(app.state().ready == before_refresh.ready);
-        assert(app.state().ready && app.state().selected_model == 0);
+        // Starting without an explicitly selected model leaves the app unprepared.
+        assert(!app.state().ready && app.state().selected_model == -1);
         assert(app.activity() == prospero::Activity::Idle);
-        assert(told(app, prospero::Notice::ModelReady));
+        assert(!told(app, prospero::Notice::ModelReady));
         assert(app.select_model(499));
         settle(app);
         assert(app.state().preferences.model_id == "model-499");
@@ -302,7 +309,8 @@ int main(int argc, char **argv)
         prospero::App app;
         assert(app.initialize());
         settle(app);
-        assert(app.state().selected_model == 499);
+        // A remembered model is not prepared automatically; the user selects it per session.
+        assert(app.state().selected_model == -1 && !app.state().ready);
         assert(app.state().preferences.reduced_motion && app.state().preferences.accent == 2);
         assert(app.state().preferences.context_length == 32768);
         assert(app.state().preferences.kv_cache == 0 && app.state().preferences.thinking);
