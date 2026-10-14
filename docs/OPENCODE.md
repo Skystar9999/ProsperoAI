@@ -42,12 +42,17 @@ path. The example reads `PROSPEROAI_API_KEY` from the environment; leave it unse
 when the console has no `api_key.txt`. Its permissions allow repository reading
 and ask before edits, shell commands, web access, or the ProsperoAI search tool.
 OpenCode supports more granular permission rules if you want to adjust that policy.
+The example selects Qwen 3.8 9B Distill Q4_K_M with a 16K context. In our isolated
+OpenCode 1.1.36 test, it completed a read-edit-test task at 16K. The app's default
+4K context was too small for OpenCode's system and tool descriptions; select at
+least 16K in ProsperoAI's Generation settings for this profile.
 
 This uses OpenCode's [custom OpenAI-compatible provider](https://opencode.ai/docs/providers/#custom-provider).
-The checked-in profile uses Mistral 7B as a protocol example only; it has not
-qualified as a coding model. A direct OpenCode 1.1.36 streaming connection returned
-`API_OK` on the PS5 test build. A PS5 function-call test called `lookup` with
-`{"query":"Vulkan"}`, accepted the tool result and produced a final answer.
+On the PS5 test title, OpenCode 1.1.36 with Qwen 3.8 9B Distill Q4_K_M read a task
+file, edited only the permitted fixture, ran its allowed verifier (`VERIFY_OK`),
+and reported the result. Mistral 7B was a weaker control: with automatic tool
+choice it invented file contents instead of calling `read`. These are small
+controlled tasks, not broad coding-quality benchmarks.
 
 ### Use LibreY search
 
@@ -81,7 +86,10 @@ environment:
 ```
 
 Use the MCP `web_search` tool when you want OpenCode to search through the
-embedded LibreY engine in ProsperoAI. OpenCode also has its own optional
+embedded LibreY engine in ProsperoAI. Instruct the model to call
+`prosperoai-search_web_search` before answering; a vague search prompt once
+produced a fabricated result, while an explicit call returned a Vane result
+with its source URL. OpenCode also has its own optional
 `websearch`/`webfetch` tools. Their provider selection lives in OpenCode; those
 hosted search providers are separate from the open-source LibreY route. Disable
 OpenCode's built-in `websearch` if you want only the LibreY MCP tool. OpenCode

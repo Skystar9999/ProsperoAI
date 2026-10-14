@@ -32,33 +32,36 @@ commands.
 
 - The protocol round trip is verified on-console and with OpenCode 1.1.36, but
   that does not prove autonomous coding quality. Mistral 7B failed an automatic
-  read-tool selection test by inventing file contents; a forced tool-call
-  diagnostic did complete the round trip. The example model is therefore a
-  connection example, not a coding recommendation.
-- No model has yet passed the full deterministic OpenCode sequence: find a
-  symbol, read a file, make a one-line edit, run a test, and search then cite a
-  source. A tested-model recommendation must wait for those results.
-- Native and web `/search` plus the MCP bridge need a fresh end-to-end check
-  against the current test build. Earlier console deployment succeeded, but a
-  live search request could not be reached from the restricted host session.
+  read-tool selection test by inventing file contents; Qwen passed a small,
+  controlled task but has not completed broader coding qualification.
+- Qwen 3.8 9B Distill Q4_K_M passed a controlled read-edit-test task in
+  OpenCode 1.1.36 at 16K context; the same test was not reliable at 4K because
+  OpenCode's system/tool prompt exceeded the context. This is a useful candidate
+  for guided tasks, not a broad coding-quality benchmark.
+- The same model called the ProsperoAI MCP search tool and returned a real result
+  with its URL when explicitly instructed to call it. A vague search prompt
+  produced a fabricated answer, so automatic search selection remains unreliable.
+- Native `/search` in the PS5 app and the MCP bridge both returned three live
+  results with source URLs. The web UI `/search` flow still needs a fresh visual
+  interaction check; its backend shares the verified handler.
 - OpenCode streaming, tool calls and the supported schema subset are covered;
   cancellation/disconnect behavior and broad model/template compatibility still
   need targeted verification.
 
 ## Verification sequence
 
-1. Build and deploy to a designated test title, then confirm the title is
-   running before calling port 11434.
-2. Verify `/v1/models`, streaming completion, forced and automatic tool use,
-   argument rejection, and search results with source URLs.
-3. Run OpenCode against at least one candidate coding model and one weaker
-   control in a disposable checkout. Record model ID, context, task outcome,
-   latency, and tool-selection failures.
-4. Run the deterministic read-edit-test task with the example permission
-   profile, keeping changes confined to the disposable checkout.
-5. Update `docs/OPENCODE.md` with only verified model recommendations and
-   console results. Keep this file as the status record until qualification is
-   complete.
+1. Done: on PPSA99023, confirm the title is running, check `/v1/models`, and
+   verify `/api/search` and the MCP `web_search` call return live URLs.
+2. Done: API tests cover schema validation, tool history, tool-choice modes,
+   streaming, round trips, and rejected malformed calls.
+3. Done: Qwen 3.8 9B Distill Q4_K_M completed a controlled OpenCode read-edit-test
+   task at 16K context; Mistral 7B remains a weaker control that failed automatic
+   read-tool selection.
+4. Remaining: test a broader sequence (symbol lookup, one-line code change,
+   project test, and cited web research) in a disposable checkout and visually
+   confirm the web UI search flow.
+5. Done: update `docs/OPENCODE.md` with the tested profile and the model/search
+   limits above; keep this file as the status record for remaining qualification.
 
 ## Architecture
 

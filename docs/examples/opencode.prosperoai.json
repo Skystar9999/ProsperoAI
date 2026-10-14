@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "prosperoai/Mistral-7B-Instruct-v0.3.Q4_0.gguf",
+  "model": "prosperoai/qwen3.8-9b-distill-q4-k-m.gguf",
   "provider": {
     "prosperoai": {
       "npm": "@ai-sdk/openai-compatible",
@@ -10,9 +10,9 @@
         "apiKey": "{env:PROSPEROAI_API_KEY}"
       },
       "models": {
-        "Mistral-7B-Instruct-v0.3.Q4_0.gguf": {
-          "name": "Mistral 7B Instruct v0.3 Q4_0",
-          "limit": {"context": 4096, "output": 2048},
+        "qwen3.8-9b-distill-q4-k-m.gguf": {
+          "name": "Qwen 3.8 9B Distill Q4_K_M",
+          "limit": {"context": 16384, "output": 2048},
           "tool_call": true
         }
       }
