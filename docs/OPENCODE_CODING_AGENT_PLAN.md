@@ -48,15 +48,21 @@ commands.
   cancellation/disconnect behavior and broad model/template compatibility still
   need targeted verification.
 
-## Planned: evaluate 4get as an OpenCode search provider
+## Planned: build a native C++ metasearch
 
-4get is a separate PHP proxy-search project, not a library to embed in the PS5
-app. Its [upstream README](https://git.lolcat.ca/lolcat/4get) describes a
-100–400 MB server footprint and its [license](https://git.lolcat.ca/lolcat/4get/src/branch/master/license.txt)
-is AGPLv3-only. Keep any first integration outside ProsperoAI on the
-development host, exposed to OpenCode as an optional MCP tool; do not run its
-server on the PS5. The project provides `GET /api/v1/web?s=<query>` with JSON
-results (`status`, `web[].title`, `web[].description`, and `web[].url`), and asks
+The goal is a lightweight metasearch implemented in ProsperoAI's native C++
+backend and exposed through the existing conversation, web UI, and OpenCode MCP
+search paths. It should query a small set of selectable upstream search
+providers, normalize and deduplicate their results, and enforce strict time,
+response-size, and result-count limits. Keep provider/network buffers bounded
+and release them after each request so the feature fits the PS5 memory budget.
+
+Use 4get as a reference for provider coverage and normalized search results,
+not as a server or runtime dependency in ProsperoAI. Its [upstream README](https://git.lolcat.ca/lolcat/4get)
+describes a PHP server footprint of 100–400 MB and its
+[license](https://git.lolcat.ca/lolcat/4get/src/branch/master/license.txt) is
+AGPLv3-only. Its API is `GET /api/v1/web?s=<query>` and returns JSON fields
+including `status`, `web[].title`, `web[].description`, and `web[].url`. It asks
 API clients to [cache results and only issue human-triggered searches](https://git.lolcat.ca/lolcat/4get/src/branch/master/api.txt).
 
 Initial manual smoke check: `4get.nadeko.net` returned useful JSON search
@@ -65,12 +71,14 @@ results and source URLs. The official `4get.ca` endpoint and
 captcha-derived pass. A live OpenCode call through a temporary MCP adapter was
 started but stopped before a result, so OpenCode integration is unverified.
 
-Next steps: choose an instance or run 4get on the development host, implement a
-small optional MCP adapter with response caching and result limits, then run one
-human-requested OpenCode search and verify the exact titles and source URLs.
-Check the AGPLv3 obligations before distributing or bundling any 4get-derived
-code. Keep ProsperoAI's existing embedded LibreY route as the PS5-native search
-path.
+Next steps: define the C++ provider interface and normalized result type, then
+prototype one additional provider beside the existing LibreY-compatible
+DuckDuckGo route. Compare its output format and behavior with 4get's API, add
+bounded caching and timeouts, and run one human-requested search through the
+existing OpenCode MCP bridge. Verify that results include their source URLs and
+that idle/request memory stays bounded. Review AGPLv3 obligations before
+copying or distributing any 4get-derived code; prefer an independent
+implementation against provider interfaces.
 
 ## Verification sequence
 
