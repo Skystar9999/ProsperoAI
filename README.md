@@ -5,9 +5,9 @@
 <h1 align="center">ProsperoAI</h1>
 
 <p align="center">
-  <strong>Private, local generative AI for PlayStation 5 homebrew</strong><br>
-  Chat, create 512 × 512 images, generate short audio, and synthesize speech
-  with models running locally through the PS5 GPU.
+  <strong>Local generative AI for PlayStation 5 homebrew</strong><br>
+  Chat with LLMs, generate 512 × 512 images and short audio, and synthesize speech,
+  all locally on the PS5 GPU.
 </p>
 
 <p align="center">
