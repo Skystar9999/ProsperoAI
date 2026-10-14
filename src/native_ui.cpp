@@ -1549,9 +1549,7 @@ void NativeUI::Impl::build_generation_form()
         selected_idle);
     form_.add_value(9, "Processing", "On this console");
     form_.add_choice(22, "Web search", {"Off", "LibreY"}, runtime.web_search ? 1 : 0);
-    form_.add_value(23, "LibreY server", runtime.librey_url.empty()
-                                              ? "Set the HTTPS address in the web UI Settings."
-                                              : runtime.librey_url);
+    form_.add_value(23, "Search engine", "Built into ProsperoAI");
     form_.enter();
 }
 
@@ -1613,7 +1611,7 @@ void NativeUI::Impl::apply_generation_form()
     if (!prospero_settings::set(runtime))
     {
         toasts_.push(ui::StatusKind::warning, "Web search not saved",
-                     "Set a valid LibreY HTTPS address in the web UI Settings first.");
+                     "Could not save built-in LibreY search settings.");
         build_generation_form();
     }
 }

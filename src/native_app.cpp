@@ -881,14 +881,14 @@ void App::generate()
     std::string search_error;
     if (search_intent)
     {
-        if (!runtime.web_search || !prospero_settings::valid_librey_url(runtime.librey_url))
+        if (!runtime.web_search)
         {
             result_.notice = Notice::GenerationFailed;
-            result_.status = "Enable LibreY and set its HTTPS address in Settings before using /search.";
+            result_.status = "Enable built-in LibreY search in Settings before using /search.";
             refresh_sessions();
             return;
         }
-        if (!prospero_librey::search(runtime.librey_url, search_query,
+        if (!prospero_librey::search(search_query,
                                      runtime.web_search_timeout_seconds, 5,
                                      &search_results, &search_error))
             search_error = "Web search failed: " + search_error +

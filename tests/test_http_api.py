@@ -73,22 +73,15 @@ class HttpApiTests(unittest.TestCase):
         header, body = self.request('/api/settings/runtime')
         self.assertIn('200 OK', header)
         self.assertFalse(json.loads(body)['web_search'])
-        self.assertEqual(json.loads(body)['librey_url'], '')
         header, body = self.request('/api/search', body={'query': 'ProsperoAI'})
         self.assertIn('409 Conflict', header)
-        self.request('/api/settings/runtime', body={'librey_url': 'https://search.example.org',
-                                                    'web_search': True, 'web_search_timeout': 10})
+        self.request('/api/settings/runtime', body={'web_search': True, 'web_search_timeout': 10})
         settings = json.loads(self.request('/api/settings/runtime')[1])
         self.assertTrue(settings['web_search'])
-        self.assertEqual(settings['librey_url'], 'https://search.example.org')
         self.assertEqual(settings['web_search_timeout'], 10)
         header, body = self.request('/api/search', body={'query': 'ProsperoAI', 'limit': 3})
         self.assertIn('502 Bad Gateway', header)
         self.assertIn('PS5 build only', json.loads(body)['error']['message'])
-        for invalid in ('http://search.example.org', 'https://user@search.example.org',
-                        'https://search.example.org/path?q=secret'):
-            self.assertIn('400 Bad Request',
-                          self.request('/api/settings/runtime', body={'librey_url': invalid})[0])
     def test_chatterbox_language_is_selectable_and_validated(self):
         config = Path(self.scratch.name) / 'runtime.cfg'
         config.write_text('version=2\n')

@@ -59,7 +59,7 @@ def handle(message):
     elif method == "tools/list":
         send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{
             "name": "web_search",
-            "description": "Search the configured LibreY instance through ProsperoAI on the PS5. Returns a few titles, snippets and source URLs.",
+            "description": "Search through ProsperoAI's built-in LibreY-compatible engine on the PS5. Returns titles, snippets and source URLs.",
             "inputSchema": {"type": "object", "properties": {
                 "query": {"type": "string", "minLength": 2, "maxLength": 256},
                 "limit": {"type": "integer", "minimum": 3, "maximum": 5, "default": 5}},

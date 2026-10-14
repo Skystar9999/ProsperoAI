@@ -5,9 +5,8 @@
 Use a text model served by ProsperoAI on the PS5 as the inference provider in
 OpenCode, while OpenCode runs project tools on the development computer. The
 workflow should support repository reading and editing, tests and shell
-commands, plus web search through an open-source search service. The PS5 remains
-an inference server; it does not receive repository files or execute project
-commands.
+commands, plus web search through a LibreY-derived engine embedded in the app.
+The PS5 does not receive repository files or execute project commands.
 
 ## Current state
 
@@ -29,33 +28,34 @@ proves only that a forced tool call can be passed back and forth.
 PS5 native UI ─┐
 ProsperoAI web UI ├─> shared chat/search orchestration ─> local GGUF model
 OpenCode ───────┘             │                           │
-                               └─ optional web_search <────┘
+                               └─ web_search
                                       │
                                       ▼
-                             PS5 HTTP client
+                         embedded native LibreY adapter
                                       │
                                       ▼
-                        self-hosted LibreY JSON API
+                      DuckDuckGo HTML results over HTTPS
 
 OpenCode project tools (read/edit/bash) stay on the development computer.
 OpenCode can use its own websearch tool instead, or reach the PS5 search tool
 through an OpenCode MCP bridge.
 ```
 
-LibreY is primarily an app feature: native PS5 conversations and ProsperoAI's
-web UI use the same search implementation. When enabled, the user can enter
-`/search <query>` in chat; ProsperoAI's shared chat flow performs it through a
-small HTTP client and gives 3–5 titles, snippets and URLs to the model so it
-can answer with sources. Search results are untrusted input. Automatic
-model-selected search is a later improvement.
+The upstream LibreY project is a PHP web app, so it cannot be run as-is inside
+the PS5 title. ProsperoAI embeds a native C++ implementation of its text search
+flow, starting with LibreY's DuckDuckGo HTML engine: native chat, web UI, and
+OpenCode MCP share the same handler. When enabled, `/search <query>` fetches
+and parses up to five results within the app. Search results are untrusted
+input. Additional engine adapters and automatic model-selected search are
+later improvements.
 OpenCode continues to execute project tools and permission prompts on the
 development computer. Its own `websearch` tool is a separate optional route;
 the documented provider choices are hosted services, so that route is not an
 open-source search stack. To use ProsperoAI/LibreY in OpenCode, provide a small
-MCP bridge which forwards a search request to the PS5 app's search endpoint.
-LibreY's project documents `api.php` as a JSON API supporting GET and POST.
-The instance should be self-hosted; configured upstream search engines may have
-their own terms and licenses.
+MCP bridge which forwards a search request to the PS5 app's embedded engine.
+Search queries go directly from the PS5 to DuckDuckGo over HTTPS; its privacy
+and availability depend on that provider. OpenCode's built-in websearch remains
+a separate provider-based option.
 
 ## Work plan
 
@@ -87,39 +87,39 @@ their own terms and licenses.
 - Start with sequential tool calls. Enable parallel tool calls only after
   testing models that reliably produce them.
 
-### 3. Add shared LibreY search for app chats
+### 3. Embed LibreY-compatible text search in app chats
 
 - Add a Web Search setting in ProsperoAI with `Off` and `LibreY` choices, shared
-  by native PS5 conversations and the web UI. Let the user set a LibreY instance
-  URL and timeout; cap results at 3–5.
-- Implement a lightweight HTTP client for LibreY's JSON API, with bounded
-  connect/read timeouts, response size limits, TLS verification where
-  supported, and clear errors for HTTP failure, timeout, malformed JSON or no
-  results. Keep networking off rendering and inference threads.
+  by native PS5 conversations and the web UI. Include a timeout; cap results at
+  five.
+- Port LibreY's text search engine interface into the native app and start with
+  its DuckDuckGo HTML adapter. Add other engine adapters only after parser
+  fixtures and live PS5 tests.
+- Keep bounded connect/read timeouts, response size limits, TLS verification,
+  and clear errors for HTTP failure, timeout, malformed HTML or no results.
 - Add a user-triggered `/search <query>` command to both chat flows when enabled.
   Run the request through the common app-side search handler, return only title,
   short snippet and URL, then resume generation with those results in context.
   Consider model-selected tool calls after tool-call validation and reliability
   work in sections 1 and 2.
-- Validate URL and response fields; treat result text as untrusted, preserve
+- Validate response fields; treat result text as untrusted, preserve
   source URLs, and never follow instructions embedded in search results.
-- Configure the endpoint locally; never commit a private instance URL or
-  credentials. Self-host LibreY for availability and query privacy.
+- Do not require a separate LibreY URL or server process. Document that the
+  selected upstream search provider receives each query.
 
 ### 4. Connect OpenCode to the model and selectable search
 
 - Keep OpenCode's project tools (read, grep, glob, edit, write and bash) on the
-  development computer. The PS5 only performs inference and its configured web
-  search; it never receives project filesystem or shell access.
+  development computer. The PS5 only performs inference and embedded web search;
+  it never receives project filesystem or shell access.
 - Provide a small MCP bridge exposing a narrow `web_search` tool which forwards
-  queries to ProsperoAI's LibreY search endpoint. This lets OpenCode use the
-  same self-hosted LibreY configured for in-app chats.
+  queries to ProsperoAI's embedded search endpoint.
 - Document OpenCode's built-in `websearch`/`webfetch` as a separate route. Let
   users enable or disable it and select its provider in OpenCode settings/config;
   do not call those hosted providers open-source. Users can disable built-in
   websearch and enable the LibreY MCP bridge for the open-source option.
-- Document LibreY's AGPL-3.0 license and the separate terms of its upstream
-  search providers.
+- Keep LibreY attribution and license notices for any adapted code; document
+  separate terms and privacy behavior of the selected search provider.
 
 ### 5. Provide a safe OpenCode project profile
 
@@ -152,10 +152,10 @@ their own terms and licenses.
   read-edit-test task in a local checkout using its own tools.
 - Tool arguments are validated against their declared schema and malformed
   calls fail closed.
-- Native PS5 chat and the web UI search through a self-hosted LibreY instance
-  and return cited source URLs.
-- OpenCode can use either its selected websearch provider or the same PS5
-  LibreY endpoint through MCP.
+- Native PS5 chat and the web UI search through the embedded LibreY adapter and
+  return cited source URLs.
+- OpenCode can use either its selected websearch provider or the same embedded
+  PS5 search endpoint through MCP.
 - The console app remains isolated from project files and shell execution.
 - Documentation clearly distinguishes API compatibility from tested coding
   performance and model reliability.
@@ -166,5 +166,5 @@ their own terms and licenses.
 - [OpenCode providers](https://opencode.ai/docs/providers/)
 - [OpenCode MCP servers](https://opencode.ai/docs/mcp-servers/)
 - [LibreY source and license](https://github.com/Ahwxorg/LibreY)
-- [LibreY JSON API implementation](https://github.com/Ahwxorg/LibreY/blob/main/api.php)
+- [LibreY DuckDuckGo adapter](https://github.com/Ahwxorg/LibreY/blob/main/engines/text/duckduckgo.php)
 - [OpenCode websearch settings and providers](https://opencode.ai/docs/websearch/)

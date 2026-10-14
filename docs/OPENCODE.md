@@ -71,13 +71,13 @@ A direct OpenCode 1.1.36 streaming connection returned `API_OK` on the PS5 test 
 
 ### Use LibreY search
 
-In the web UI Settings, set the HTTPS address of your LibreY instance, enable
-LibreY, and use **Test LibreY**. The PS5 app can then search from its built-in
-conversation with `/search your query`; the same command works in the web UI.
+Enable built-in LibreY search in web UI Settings and use **Test search**. The PS5
+app can then search from its built-in conversation with `/search your query`; the
+same command works in the web UI.
 The app sends the search from the console and passes up to five titles, snippets
 and source URLs to the model. Search results are treated as untrusted input.
-LibreY runs as a separate self-hosted service and is not bundled into the PS5 app.
-The client caps each response at 128 KiB; its shared HTTPS transport reserves a
+The search adapter runs inside ProsperoAI and uses LibreY's DuckDuckGo HTML
+engine. It caps each response at 128 KiB; the shared HTTPS transport reserves a
 4 MiB receive buffer only during a request and frees it when the request closes.
 
 OpenCode can call the same PS5 search endpoint through the included MCP bridge.
@@ -101,7 +101,7 @@ environment:
 ```
 
 Use the MCP `web_search` tool when you want OpenCode to search through the
-LibreY instance configured in ProsperoAI. OpenCode also has its own optional
+embedded LibreY engine in ProsperoAI. OpenCode also has its own optional
 `websearch`/`webfetch` tools. Their provider selection lives in OpenCode; those
 hosted search providers are separate from the open-source LibreY route. Disable
 OpenCode's built-in `websearch` if you want only the LibreY MCP tool. OpenCode

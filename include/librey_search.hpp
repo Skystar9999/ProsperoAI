@@ -12,9 +12,9 @@ struct Result {
 };
 
 bool valid_query(const std::string &query);
-bool parse_response(const std::string &json, unsigned maximum,
+bool parse_duckduckgo_html(const std::string &html, unsigned maximum,
                     std::vector<Result> *results, std::string *error);
-bool search(const std::string &base_url, const std::string &query,
+bool search(const std::string &query,
             unsigned timeout_seconds, unsigned maximum,
             std::vector<Result> *results, std::string *error);
 std::string prompt_context(const std::string &query, const std::vector<Result> &results);

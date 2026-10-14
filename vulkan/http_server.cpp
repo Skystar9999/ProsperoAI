@@ -1001,15 +1001,6 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                 p.web_search = it.value().get<bool>();
                 valid = true;
             }
-            else if (it.key() == "librey_url" && it.value().is_string())
-            {
-                const auto url = it.value().get<std::string>();
-                if (url.empty() || prospero_settings::valid_librey_url(url))
-                {
-                    p.librey_url = url;
-                    valid = true;
-                }
-            }
             else if (it.key() == "web_search_timeout" && it.value().is_number_integer())
             {
                 const auto timeout = it.value().get<long long>();
@@ -1042,7 +1033,6 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"thinking", p.thinking},
                        {"idle_unload_minutes", p.idle_unload_minutes},
                        {"web_search", p.web_search},
-                       {"librey_url", p.librey_url},
                        {"web_search_timeout", p.web_search_timeout_seconds},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
@@ -1063,10 +1053,10 @@ void handle_librey_search(const NetApi &api, int sock, const char *body)
         return;
     }
     const auto settings = prospero_settings::get();
-    if (!settings.web_search || !prospero_settings::valid_librey_url(settings.librey_url))
+    if (!settings.web_search)
     {
         openai_error(api, sock, "409 Conflict", "web_search_disabled",
-                     "Enable LibreY and configure its URL in Settings first.");
+                     "Enable built-in LibreY search in Settings first.");
         return;
     }
     unsigned maximum = 5;
@@ -1090,7 +1080,7 @@ void handle_librey_search(const NetApi &api, int sock, const char *body)
                      "Search queries must be 2–256 characters without control characters.");
         return;
     }
-    if (!prospero_librey::search(settings.librey_url, query, settings.web_search_timeout_seconds,
+    if (!prospero_librey::search(query, settings.web_search_timeout_seconds,
                                  maximum, &results, &error))
     {
         openai_error(api, sock, "502 Bad Gateway", "librey_search_failed", error.c_str());
