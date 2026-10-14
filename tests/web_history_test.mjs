@@ -9,6 +9,8 @@ const historyCode = source.slice(source.indexOf('function renderHistory(){'), so
 const createCode = source.slice(source.indexOf('function newConversation(){'), source.indexOf('function startKind('));
 const syncStart = source.indexOf('async function persistConversation(');
 const syncCode = source.slice(syncStart, source.indexOf("$('delete-dialog').addEventListener", syncStart));
+const mediaStart = source.indexOf('function extractMedia(');
+const mediaCode = source.slice(mediaStart, source.indexOf('function decodeTGA(', mediaStart));
 function element() {
     return { value: '', textContent: '', children: [], events: {},
         classList: { toggle() {}, remove() {} }, setAttribute() {}, focus() {},
@@ -29,11 +31,11 @@ function fixture() {
             { id: 'old', title: 'Unclassified old model', model: 'uninstalled', messages: [] }
         ],
         models: [{ id: 'text', purpose: 'text-to-text', name: 'Text model' }, { id: 'image', purpose: 'text-to-image', name: 'Image model' }],
-        current: null, controller: null, pendingDelete: '', selectedModel: 'image',
+        current: null, controller: null, pendingDelete: '', selectedModel: 'image', currentModelChosen: false,
         api() { return Promise.resolve({}); },
         persistConversation() { return Promise.resolve(); },
         save(key, value) { context.saved = { key, value }; },
-        showWelcome() { context.current = null; }, openChat() {}, renderMessages() {} };
+        showWelcome() { context.current = null; }, closeHistory() {}, openChat() {}, renderMessages() {} };
     runInNewContext(historyCode + createCode, context);
     return { context, lookup, rows: () => lookup('history').children };
 }
@@ -48,17 +50,19 @@ test('category, content/model search and filtered open/delete keep conversation 
     $('delete-dialog').returnValue = 'delete'; await $('delete-dialog').events.close();
     assert.equal(c.conversations.length, 3); assert.ok(!c.conversations.some(x => x.id === 'voice'));
     assert.equal(c.saved.value.length, 3);
+    assert.ok(c.current); assert.notEqual(c.current.id, 'voice'); assert.equal(c.current.messages.length, 0);
     $('history-kind').value = 'other'; $('history-search').value = ''; c.renderHistory();
     assert.equal(rows().length, 1); assert.equal(rows()[0].children[0].textContent, 'Unclassified old model');
     $('history-search').value = 'does not exist'; c.renderHistory(); assert.equal(rows().length, 0);
     assert.equal($('history-count').textContent, '0 of 3 conversations');
 });
-test('new conversations retain model type/name after the installed catalog changes', () => {
+test('new conversations wait for an explicit model selection', () => {
     const { context: c, lookup: $, rows } = fixture();
-    c.newConversation(); assert.equal(c.current.purpose, 'text-to-image'); assert.equal(c.current.modelName, 'Image model');
+    c.newConversation(); assert.equal(c.current.purpose, 'other'); assert.equal(c.current.modelName, ''); assert.equal(c.current.model, '');
     const id = c.current.id; c.models = [];
-    $('history-kind').value = 'text-to-image'; c.renderHistory();
-    assert.equal(rows().length, 1); rows()[0].children[0].onclick(); assert.equal(c.current.id, id);
+    $('history-kind').value = 'other'; c.renderHistory();
+    assert.ok(!c.conversations.some(item=>item.id===id));
+    assert.equal(c.current.id,id);
 });
 test('browser history migrates to the console and receives native conversations', async () => {
     const native = { id: 'session-native-1', title: 'From PS5', model: 'text', modelName: 'Text model',
@@ -89,4 +93,15 @@ test('browser history migrates to the console and receives native conversations'
     assert.equal(context.conversations.find(item => item.id === local.id).messages[0].content, 'Saved in browser');
     assert.equal(context.conversations.find(item => item.id === native.id).messages[0].content, 'Saved on console');
     assert.equal(saved['prospero-sync-initialized'], true);
+});
+
+test('generated PNG is preferred while saved conversations use their archived image', () => {
+    const context = {};
+    runInNewContext(mediaCode, context);
+    const generated = context.extractMedia(
+        'Image generated locally.\nPNG: /download0/prosperoai-image-0.png\nPreview: /download0/prosperoai-image-0.tga');
+    assert.equal(generated.path, '/download0/prosperoai-image-0.png');
+    const saved = context.extractMedia(
+        'PNG: /download0/prosperoai-image-0.png\nPreview: /download0/ProsperoAI/sessions/abc/media/2-image.tga');
+    assert.equal(saved.path, '/download0/ProsperoAI/sessions/abc/media/2-image.tga');
 });

@@ -81,11 +81,13 @@ std::string api_content(const ApiJson &message) {
 
 struct ApiChatRequest {
     std::string model;
+    std::string output_session_id;
+    unsigned output_message_index = 0;
     std::vector<std::string> roles, contents;
     ApiJson tools = ApiJson::array();
     std::string forced_tool;
     bool stream = false, include_usage = false, structured = false, required = false;
-    unsigned max_tokens = prospero_generation::MaxOutputTokens;
+    unsigned max_tokens = 0;
     unsigned context_tokens = 0;
     float temperature = 0;
     bool parallel_tools = true;
@@ -95,6 +97,17 @@ ApiChatRequest parse_api_chat(const ApiJson &body) {
     if (!body.is_object()) throw ApiError("400 Bad Request", "invalid_json", "Expected a JSON object.");
     ApiChatRequest result;
     result.model = body.at("model").get<std::string>();
+    if (body.contains("output_session_id")) {
+        if (!body["output_session_id"].is_string() ||
+            !prospero_session::valid_id(body["output_session_id"].get<std::string>().c_str()))
+            throw ApiError("400 Bad Request", "invalid_output_session", "output_session_id is invalid.");
+        result.output_session_id = body["output_session_id"].get<std::string>();
+        const auto index = body.value("output_message_index", ApiJson(0));
+        if (!index.is_number_integer() || index.get<long long>() < 0 ||
+            index.get<long long>() >= prospero_session::MessageCapacity)
+            throw ApiError("400 Bad Request", "invalid_output_message_index", "output_message_index is invalid.");
+        result.output_message_index = static_cast<unsigned>(index.get<unsigned>());
+    }
     result.stream = body.value("stream", false);
     result.temperature = body.value("temperature", 0.0f);
     if (!std::isfinite(result.temperature) || result.temperature < 0 || result.temperature > 2)
@@ -102,15 +115,17 @@ ApiChatRequest parse_api_chat(const ApiJson &body) {
     result.parallel_tools = body.value("parallel_tool_calls", true);
     if (body.contains("stream_options") && !body["stream_options"].is_null())
         result.include_usage = body["stream_options"].value("include_usage", false);
-    const auto limit = body.contains("max_completion_tokens")
-                           ? body["max_completion_tokens"]
-                           : body.value("max_tokens", ApiJson(prospero_generation::MaxOutputTokens));
-    if (!limit.is_number_integer() || limit.get<long long>() <= 0)
-        throw ApiError("400 Bad Request", "invalid_max_tokens", "max_tokens must be a positive integer.");
-    if (limit.get<long long>() > prospero_generation::MaxOutputTokens)
-        throw ApiError("400 Bad Request", "invalid_max_tokens",
-                       "max_tokens must not exceed 131072.");
-    result.max_tokens = static_cast<unsigned>(limit.get<long long>());
+    if (body.contains("max_completion_tokens") || body.contains("max_tokens")) {
+        const auto limit = body.contains("max_completion_tokens") ? body["max_completion_tokens"] : body["max_tokens"];
+        if (!limit.is_number_integer() || limit.get<long long>() <= 0)
+            throw ApiError("400 Bad Request", "invalid_max_tokens", "max_tokens must be a positive integer.");
+        if (limit.get<long long>() > prospero_generation::MaxOutputTokens)
+            throw ApiError("400 Bad Request", "invalid_max_tokens",
+                           "max_tokens must not exceed 131072.");
+        result.max_tokens = static_cast<unsigned>(limit.get<long long>());
+    } else {
+        result.max_tokens = prospero_settings::get().output_limit;
+    }
     if (body.contains("context_tokens")) {
         const auto &context = body["context_tokens"];
         if (!context.is_number_integer() || context.get<long long>() < 512 ||
@@ -339,9 +354,39 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
             output.data(), output.size(), &stats, active_api_stream ? api_stream_progress : nullptr);
         if (result != 0) throw ApiError("400 Bad Request", "generation_failed", output[0] ? output.data() : "Model generation failed.");
         auto message = api_assistant(request, output.data(), stream.id);
+        if (!request.output_session_id.empty() && !message.contains("tool_calls") &&
+            std::strcmp(gpt_runtime_model_purpose(selected), "text-to-text") == 0) {
+            const auto content = message.value("content", std::string());
+            if (!content.empty()) {
+                char saved_path[384]{};
+                prospero_session::OutputMetadata metadata{};
+                metadata.model_id = request.model.c_str();
+                metadata.model_name = gpt_runtime_model_name(selected);
+                metadata.prompt = request.contents.empty() ? "" : request.contents.back().c_str();
+                metadata.output_limit = request.max_tokens;
+                metadata.requested_context = request.context_tokens;
+                metadata.thinking = runtime.thinking;
+                // The archive is best-effort: a full work partition must not invalidate a response.
+                prospero_session::archive_text(request.output_session_id.c_str(),
+                    request.output_message_index, content.c_str(), metadata, saved_path,
+                    sizeof(saved_path));
+            }
+        }
         const std::string finish = message.contains("tool_calls") ? "tool_calls" : stats.output_limit_reached ? "length" : "stop";
         ApiJson usage = {{"prompt_tokens", stats.prompt_tokens}, {"completion_tokens", stats.generated_tokens},
                          {"total_tokens", stats.prompt_tokens + stats.generated_tokens}};
+        if (stats.elapsed_microseconds != 0) {
+            const bool text_model = std::strcmp(gpt_runtime_model_purpose(selected), "text-to-text") == 0;
+            if (text_model) {
+                const auto decode_us = stats.elapsed_microseconds > stats.prefill_microseconds
+                    ? stats.elapsed_microseconds - stats.prefill_microseconds : stats.elapsed_microseconds;
+                const unsigned tokens = stats.generated_tokens > 1 ? stats.generated_tokens - 1
+                                                                    : stats.generated_tokens;
+                usage["tokens_per_second"] = decode_us != 0
+                    ? static_cast<double>(tokens) * 1000000.0 / static_cast<double>(decode_us) : 0.0;
+            }
+            usage["generation_time_ms"] = static_cast<double>(stats.elapsed_microseconds) / 1000.0;
+        }
         if (request.stream) {
             stream.begin();
             if (message.contains("tool_calls")) {

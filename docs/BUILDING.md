@@ -52,12 +52,14 @@ The clean-room runtime shim (`runtime/libc.prx`) is generated from `tooling/nati
 
 `make doctor` lists what is missing. For the current build you need `clang-18`, `lld-18`, `cmake`,
 `ninja`, `make`, `python3` (3.11+), `curl`, `unzip`, `sha256sum`. For the Vulkan backend work you
-also need `glslc` (shaderc), `spirv-headers`, and `glslangValidator`. `ccache` is optional.
+also need `glslc` (shaderc), `spirv-headers`, and `glslangValidator`. The speech runtime
+(kokoro.cpp) links espeak-ng directly, so the host build needs `libespeak-ng-dev`; the PS5 build
+uses the pinned headers and `vendor/lib/libespeak-ng.a` instead. `ccache` is optional.
 
 Ubuntu/Debian example:
 
 ```bash
-sudo apt-get install -y clang-18 lld-18 cmake ninja-build ccache glslc spirv-headers glslang-tools python3-mako
+sudo apt-get install -y clang-18 lld-18 cmake ninja-build ccache glslc spirv-headers glslang-tools python3-mako libespeak-ng-dev
 ```
 
 ## vulkan-runtime
@@ -66,10 +68,14 @@ Set `PROSPERO_TEST_TITLE=<TEST-TITLE-ID>` before using the test-app targets. For
 `PROSPERO_TEST_TITLE=<TEST-TITLE-ID> make vulkan-runtime` builds the test folder
 `build/vulkan-runtime/<TEST-TITLE-ID>` without uploading or launching it. `make app`
 packages the same runtime for the configured
-release title. The app links one complete Prism llama/ggml pin
-`e8fd209c975c80aa7fb36a8423571ff3b1b7e955`, `GGML_MAX_NAME=160`, source-built SD and
-the Vulkan media bridge. AGC inference and private SD/TTS ggml archives are removed;
-RADV still requires the console's AGC platform driver. See [runtime details](VULKAN_RUNTIME.md).
+release title. The app links upstream llama.cpp `cb7934c` and one shared GGML v0.26.0
+`d7cb574`, `GGML_MAX_NAME=160`, source-built SD, audio and Kokoro adapters on Vulkan.
+AGC inference and private SD/TTS ggml archives are removed;
+RADV still requires the console's AGC platform driver. Only one modality runtime stays
+resident at a time; after two minutes without inference activity by default, the active
+runtime is released and prepared again when the next request arrives. The timeout is
+configurable from one to 60 minutes in console or web Settings. See
+[runtime details](VULKAN_RUNTIME.md).
 
 ## Vulkan backend development helpers
 
@@ -109,29 +115,110 @@ The clang static libraries (`clangBasic`, `clangAST`, ...) are built from the LL
 `build-radv.sh release`. The output is
 `.deps/mihawk-vulkan-review/.deps/native/radv-release/lib/libvulkan_radeon.ps5.a`.
 
-## Deploying to a console
+## Console environment and services
 
-The console needs a homebrew FTP server listening on `FTP_PORT` (the tested setup uses port 2120).
+Copy `.env.ps5.example` to `.env.ps5.local` and fill `PS5_HOST` with the console address
+and `PROSPERO_TEST_TITLE` with the designated test title. The local file is ignored by Git.
+Never use `PPSA99004` as a test slot. The console address has no code fallback.
 
 ```bash
-export PS5_HOST=<PS5-IP> FTP_PORT=2120 USE_CCACHE=0
-bash tools/deploy.sh
+cp .env.ps5.example .env.ps5.local
+# Edit .env.ps5.local; keep real addresses in this local file only.
+source tools/ps5-env.sh
+python3 tools/ps5ctl.py doctor
+python3 tools/ps5ctl.py status
 ```
 
-Development deployment uploads the app folder. Use a separate test title for console work and
-stop it before updating files. Registration is separate from the files in `/data/homebrew`;
-deleting files alone does not remove a registered title.
+`source tools/ps5-env.sh` exports the settings for builds, benchmarks and other commands
+in the current shell. `ps5ctl.py` automatically reads the same local file, with explicit
+environment variables taking precedence. `PS5_ENV_FILE` can select a different local
+configuration file. `doctor` performs no network calls and checks the bundled payloads'
+ELF headers, byte counts and SHA-256 hashes. `PS5_HOST` is required for console commands;
+`PROSPERO_TEST_TITLE` is required for test-build and benchmark workflows.
+
+P5 Manager is **optional**. Direct console commands, deployments and backend HTTP tests
+work without it. Set `P5_MANAGER` to its URL on the development computer only when using
+Remote Play. There is no assumed Manager address. For screenshots, also set `P5_SESSION`
+to the active Remote Play session ID. For a locally installed Manager, the URL may be
+`http://127.0.0.1:3001`; it is not the PS5 app server on port 11434.
+
+The default service ports in the example are payload 9021, FTP 2120, control 9111,
+ShadowMount 10101, kernel log 3232 and shell 2323. `PS5_FTP_PORT` configures `ps5ctl.py`;
+`FTP_PORT` configures the older deployment scripts. Custom ports must match the services
+actually configured on the console; setting a client variable does not change a payload's
+listening port.
+
+After a reboot, the loader must already be available. Restore only missing services:
+
+```bash
+python3 tools/ps5ctl.py service restore
+python3 tools/ps5ctl.py agent procs
+python3 tools/ps5ctl.py shadow info "$PROSPERO_TEST_TITLE"
+python3 tools/ps5ctl.py klog --seconds 5
+```
+
+The repository bundles zftpd, ps5vkctl, klogsrv and shsrv in `tools/payloads/`, with pinned
+hashes, source links and licenses. No `/tmp`, other checkout or console-side payload file
+is needed. Individual services can be restored with `service ftp`, `service agent`,
+`service klog` or `service shell`. See [payload provenance and rebuilds](../tools/payloads/README.md).
+A listener proves that a service is available, not that the application backend is running.
+
+## Deploying a test build
+
+Build the test folder using the sourced environment:
+
+```bash
+PROSPERO_APP_TITLE="$PROSPERO_TEST_TITLE" bash tools/build-vulkan-native.sh
+```
+
+Before updating a registered folder title, stop it and verify it is unmounted. `agent kill`
+expects a title ID, not a PID. Wait until ShadowMount reports `mounted:false`; do not upload
+while mounted. Then upload and launch:
+
+```bash
+python3 tools/ps5ctl.py agent kill "$PROSPERO_TEST_TITLE"
+python3 tools/ps5ctl.py agent procs
+python3 tools/ps5ctl.py shadow info "$PROSPERO_TEST_TITLE"
+# Continue only after mounted:false:
+python3 tools/ps5ctl.py ftp put-dir "build/vulkan-runtime/$PROSPERO_TEST_TITLE"   "/data/homebrew/$PROSPERO_TEST_TITLE"
+python3 tools/ps5ctl.py agent launch "$PROSPERO_TEST_TITLE"
+python3 tools/ps5ctl.py agent procs
+# Confirm the title appears before polling its backend:
+curl --fail "http://$PS5_HOST:11434/api/settings/runtime"
+```
+
+`ftp put-dir` applies executable mode 755, including eboot and PRX files. First registration
+still uses the configured ShadowMount installation workflow. A launch can complete before
+HTTP startup; retry the runtime endpoint while the title remains present. If it vanishes,
+capture klog and recheck processes. Do not interpret a failed connection to a stopped title
+as a model result. Backend generation/media checks use this direct HTTP API; Remote Play
+is needed only for visual UI verification. Read a screenshot before every automated Cross
+press. Never reboot the console or overwrite the production title without separate approval.
+
+To measure every installed model with a model switch on each request (the path the UI
+uses), run against the deployed test title:
+
+```bash
+python3 tools/benchmark-all-models-ps5.py --rounds 3 \
+    --output docs/performance/<date>/all-models.json --artifacts build/benchmarks/all-models
+```
+
+Text models get a correctness check and a 128-token decode measurement; media outputs are
+downloaded and validated. A title crash is recorded and the title is relaunched.
 
 ## Status
 
 The Vulkan folder title and network API have been verified on PS5 FW 12.70. Mistral 7B Q4_0 reaches a median 69.72 decode tokens/s versus 47.96 for the official upstream AGC release. The optimized isolated loader prepares a raw folder GGUF in a median 2.84 seconds across three fresh process launches; AGC was rechecked at 1.53 seconds. Compressed ffpfsc model reads remain much slower. See [loading measurements](VK_LOAD_BENCHMARK_2026-10-09.md). See [current status](VK_ACTIVE.md) and the [benchmark report](VK_BENCHMARK_2026-10-08.md) for protocol and limitations.
 
-## PS5 llama.cpp Vulkan test build
+## PS5 llama.cpp Vulkan smoke tests
 
-The WIP console build uses the reviewed RADV archive and SDK under `.deps/mihawk-vulkan-review/`. Build the host tools and host shader generator first, then:
+The smoke title links llama.cpp and GGML from the shared runtime build; it no longer compiles a
+second llama/GGML tree. `make llama-ps5` remains a compatibility alias for the common runtime
+library build. The WIP console build uses the reviewed RADV archive and SDK under
+`.deps/mihawk-vulkan-review/`. Build the host tools and host shader generator first, then:
 
 ```bash
-make llama-ps5           # static llama.cpp CPU/Vulkan libraries
+make llama-ps5           # compatibility alias for shared GGML/llama/SD/audio/Kokoro libraries
 PROSPERO_TEST_TITLE=<TEST-TITLE-ID> make vulkan-smoke       # instance and device discovery
 PROSPERO_TEST_TITLE=<TEST-TITLE-ID> make llama-vulkan-title # tiny GGUF Vulkan/CPU validation
 PROSPERO_TEST_TITLE=<TEST-TITLE-ID> make app-vulkan         # complete UI/HTTP test app
@@ -139,7 +226,7 @@ PROSPERO_TEST_TITLE=<TEST-TITLE-ID> make app-vulkan         # complete UI/HTTP t
 
 Model tests expect `build/vulkan-models/stories260K.gguf`. Set `MODEL_GGUF=/absolute/path/model.gguf` to package another model. Production Vulkan and AGC runtimes use the `/data/prosperoai/models` directory: Vulkan discovers GGUF files and AGC discovers prepared model folders. The isolated loading benchmark still packages its fixture inside `/app0/models`. The Vulkan Models screen can browse public Hugging Face repositories and download verified GGUF files to the shared directory. Downloads use file-size memory estimates: below 8 GiB is marked fits, up to about 10.7 GiB is tight, and larger files are excluded. These estimates do not guarantee every model/context combination fits. Context length is selectable or Auto; KV precision is automatic (f16 up to 8K, q8_0 above). These new runtime choices await console verification. The app reaches that directory with the filesystem access Lapy gives it at launch (`vulkan/storage.cpp`); the test title <TEST-TITLE-ID> gets a Lapy helper built for its own title ID. Outputs are in `build/prospero-vulkan/`, `build/llama-vulkan-title/`, or `build/vulkan-smoke/`. These targets do not deploy. Never overwrite PPSA99004 for testing.
 
-Build jobs default to available CPUs (four on this host). Compiler cache defaults to `build/ccache`, including host tools. Incremental PS5 llama library build measured about 1.6 seconds with no changes; model copies and multi-gigabyte image compression still take time. Host iGPU is not used for compilation.
+Build jobs default to available CPUs (four on this host). Compiler cache defaults to `build/ccache`, including host tools. Model copies and multi-gigabyte image compression still take time. Host iGPU is not used for compilation.
 
 For development, `make app-vulkan-folder` skips image compression. Upload the folder with `python3 tools/ps5ctl.py ftp put-dir build/prospero-vulkan/<TEST-TITLE-ID> /data/homebrew/<TEST-TITLE-ID>`, then rescan with ShadowMount. The FTP helper sets executable permissions on eboot.bin and PRX modules. An earlier folder launch refusal (0x80aa001a, errno 13) was fixed by SITE CHMOD 755 on these files. Once registered and stopped, update only changed files; immutable model files need not be uploaded again. Keep the same title metadata and do not replace an image while its mount is still live.
 
@@ -148,7 +235,7 @@ For development, `make app-vulkan-folder` skips image compression. Upload the fo
 To build the isolated model-loading benchmark in a dedicated test slot:
 
 ```bash
-make llama-ps5
+make llama-ps5           # compatibility alias for the shared PS5 runtime build
 PROSPERO_TEST_TITLE=<TEST-TITLE-ID> PROSPERO_LOAD_TEST_TITLE=<LOAD-TEST-TITLE-ID> \
   LLAMA_SMOKE=1 LOAD_BENCHMARK=1 MODEL_GGUF=/absolute/path/model.gguf \
   bash tools/build-vulkan-smoke.sh
@@ -164,7 +251,7 @@ Installation and repeated launches within a console-testing task are covered by 
 
 The Vulkan build also exposes `/v1/models` and `/v1/chat/completions`, including SSE and portable function calls. See [OpenCode configuration](OPENCODE.md) for bearer keys, context sizing and protocol limits. The native Vulkan title links the existing AGC media backend alongside Vulkan text inference. Voice generation and switching back to Vulkan text have been verified on console; Image and Audio generation in this combined build have not yet been exercised.
 
-Default Vulkan backend logging forwards WARN/ERROR. Create `/app0/vulkan_verbose_logging.txt` only for detailed diagnosis; synchronous full debug output materially slows loading. For first-load-only benchmark runs, add `/app0/load_parallel_only.txt` (three optimized loads per launch).
+Default Vulkan backend logging forwards WARN/ERROR. Create `/app0/vulkan_verbose_logging.txt` only for detailed diagnosis; synchronous full debug output materially slows loading. Create `/app0/vulkan_profile.txt` in a benchmark package to enable ggml's per-operator GPU timestamp report; profiling waits for query results and must not be used for throughput claims. The HTTP generation endpoint accepts benchmark-only `options.num_batch` and `options.num_ubatch` overrides (32–2048); changing either recreates the context. For first-load-only benchmark runs, add `/app0/load_parallel_only.txt` (three optimized loads per launch).
 
 ## Native UI Vulkan presentation probe
 
@@ -176,22 +263,21 @@ and [current evidence](VK_ACTIVE.md).
 
 ### Download presets
 
-The native Models library includes pinned Text (Mistral 7B Q4_0, Qwen3.5 9B Q4_0),
-Image (SD-Turbo FP16), Audio (Stable Audio Open Small FP16), and Voice (Kokoro 82M FP16)
+The native Models library includes pinned Text (Mistral 7B Q4_0, Qwen3.5 9B Q4_0,
+Granite 4.0 H-Tiny Q4_K_M),
+Image (SD-Turbo FP16), experimental Audio (Stable Audio 3 Small SFX Q8_0 and ACE-Step 1.5 Turbo Q8_0), and Voice (Kokoro 82M Vulkan)
 presets. Cross downloads the selected preset; L2/R2 change category and arrows select
 cards. The progress bar shows bytes and percentage for the entire bundle. Search typing
 uses Triangle for Space and R2 for Done.
 
-Text presets download standalone GGUF files for Vulkan. Media presets download complete
-prepared folders, including their licenses, for the AGC media backend in the same native
-Vulkan title. Only one inference backend owns model allocations at a time. The hybrid
-build isolates the older SD ggml symbols from the newer Vulkan llama.cpp ABI. Every
+Text presets download standalone GGUF files for Vulkan. Media presets download pinned
+model files for their Vulkan adapters. Only one inference model is active at a time. Every
 file is pinned to a repository commit and checked against its size and SHA-256. Media
 bundles are staged in hidden directories until all files pass verification. Failed
 staging files are overwritten on retry and never appear as usable model bundles.
 
-`model-tools/presets.json` records the pinned media manifests; Text uses the source
-entries in the existing conversion recipes. Run `python3 tools/generate-model-presets.py`
+`model-tools/presets.json` records the pinned curated model manifests; the original
+Text presets also use source entries in the conversion recipes. Run `python3 tools/generate-model-presets.py`
 after changing these records to regenerate `include/model_presets.hpp` without network
 access. Refreshing manifests requires fetching every repository tree page and computing
 SHA-256 for small files whose Hub entry has no LFS hash. Never use a truncated tree as
@@ -292,10 +378,9 @@ See [MINICPM5.md](MINICPM5.md) for its pinned model and template tests.
 
 ## Bonsai 2 and existing text models
 
-`make app-bonsai-folder` builds/signs `build/prospero-prism-native/<TEST-TITLE-ID>`
-against pinned Prism llama.cpp with ternary/Hadamard Vulkan kernels and a pinned
-Ternary Bonsai 2 27B PTQ1_0 preset. It retains GGUF text, legacy AGC bundles and
-media paths, using the Vulkan bridge for audio/TTS. This is an experimental folder
-build; it does not deploy or change the production title. Stock/shared builds omit
-this preset because their runtime cannot interpret Prism's private quantization.
+`make app-bonsai-folder` is the legacy isolated Prism build for the Ternary Bonsai 2
+27B PTQ1_0 preset. The shared upstream runtime does not yet support Prism's private
+PTQ1_0/PQ2_0 quant types; keep Bonsai disabled there until its compatibility adapter
+is ported and validated. This experimental folder build does not deploy or change the
+production title.
 See [BONSAI2_PS5.md](BONSAI2_PS5.md) for inputs, console measurements and limitations.

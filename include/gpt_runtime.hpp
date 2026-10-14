@@ -23,6 +23,10 @@ struct gpt_runtime_settings_t
     unsigned context_length = 0;   // 0 = Auto (see prospero_kv::choose_auto)
     const char* kv_cache = nullptr; // nullptr/"auto", "f16", "q8_0", "q4_0"
     bool thinking = false;
+    // Optional benchmark overrides. Zero keeps the app/file default. Changing either
+    // recreates the llama context, so production callers should leave them zero.
+    unsigned batch_length = 0;
+    unsigned ubatch_length = 0;
 };
 
 struct gpt_runtime_stats_t
@@ -37,7 +41,11 @@ struct gpt_runtime_stats_t
 
 using gpt_runtime_progress_fn = void (*)(const char *text);
 
+// Snapshot of actual backend residency; empty buffers when no model is loaded.
+bool gpt_runtime_loaded_model(char *id, std::size_t id_capacity, char *name, std::size_t name_capacity);
 bool gpt_runtime_available();
+// Number of active model generations across text, image, audio, and speech.
+unsigned gpt_runtime_generations_running();
 const char *gpt_runtime_name();
 const char *gpt_runtime_backend();
 const char *gpt_runtime_purpose();
@@ -47,6 +55,13 @@ const char *gpt_runtime_model_id(unsigned index);
 const char *gpt_runtime_model_name(unsigned index);
 const char *gpt_runtime_model_purpose(unsigned index);
 bool gpt_runtime_select_model(unsigned index);
+// Delete an installed model when it is not selected and inference is idle.
+bool gpt_runtime_delete_model(const char *id);
+// Release the selected runtime after it has been idle for timeout_seconds. A later
+// generation lazily prepares that same model again. Safe to call from the UI loop.
+void gpt_runtime_check_idle_unload(unsigned timeout_seconds);
+void gpt_runtime_check_configured_idle_unload();
+void gpt_runtime_set_idle_unload_timeout(unsigned timeout_seconds);
 void gpt_runtime_refresh_models();
 int gpt_runtime_prepare();
 bool gpt_runtime_context_full();

@@ -5,14 +5,16 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ref="$root/.deps/mihawk-vulkan-review"
 sdk="$ref/.deps/native/ps5-payload-sdk"
 archive="$ref/.deps/native/radv-release/lib/libvulkan_radeon.ps5.a"
-# All text and media now share the complete pinned Prism ggml ABI and Vulkan.
+# All text and media now share upstream GGML v0.26.0 and its Vulkan backend.
 # Legacy AGC/private-ggml comparison builds live in earlier commits.
 [[ ${SHARED_SD:-1} == 1 && ${MEDIA_VULKAN:-1} == 1 ]] || {
  echo "AGC inference was removed; this build requires shared Vulkan media" >&2; exit 2;
 }
 work="$root/build/vulkan-runtime"
-llama_source="$root/build/prism-llama-source"
-llama_build="$root/build/vulkan-runtime-ps5/llama"
+llama_source="$root/.deps/llama.cpp"
+runtime_build="$root/build/vulkan-runtime-upstream-ps5"
+llama_build="$runtime_build/llama"
+ggml_build="$runtime_build/ggml"
 [[ -f $llama_build/src/libllama.a ]] || { echo "Run make vulkan-runtime-libs first" >&2; exit 2; }
 title=${PROSPERO_APP_TITLE:?Set PROSPERO_APP_TITLE to the target title ID}
 [[ $title =~ ^PPSA[0-9]{5}$ ]] || { echo "Invalid title ID" >&2; exit 2; }
@@ -33,21 +35,26 @@ export CCACHE_DIR=${CCACHE_DIR:-$root/build/ccache}
 source "$root/tools/ninja-build.sh"
 ninja_begin "$work/app.ninja"
 objects=()
-sources=(src/kv_budget.cpp src/prefix_reuse.cpp src/main.cpp src/native_app.cpp src/native_ui.cpp src/native_ui_screens.cpp src/native_ui_style.cpp
+sources=(src/kv_budget.cpp src/prefix_reuse.cpp src/main.cpp src/native_app.cpp src/native_ui.cpp src/native_ui_screens.cpp src/native_ui_style.cpp third_party/qrcodegen/qrcodegen.cpp
  src/font_set.cpp src/media_preview.cpp src/dev_script.cpp src/gpt_input.cpp src/gpt_ime.cpp
- src/media_output_ps5.cpp src/session_store.cpp src/runtime_support.cpp
- src/ps5_opencl.cpp src/sd_runtime_ps5.cpp src/stable_audio_runtime_ps5.cpp src/agc_lifecycle.cpp
- vulkan/gpt_runtime_router.cpp vulkan/media_vulkan.cpp
+ src/media_output_ps5.cpp src/voice_recorder.cpp src/session_store.cpp src/runtime_support.cpp
+ src/agc_lifecycle.cpp inference/router.cpp inference/adapters/registry.cpp
+ inference/adapters/media/stable_diffusion_ps5.cpp inference/adapters/media/stable_audio_ps5.cpp
+ inference/adapters/media/kokoro_ps5.cpp inference/adapters/media/ace_step_ps5.cpp
+ inference/adapters/media/chatterbox_ps5.cpp
  vulkan/storage.cpp vulkan/storage_paths.cpp vulkan/elevation/elevation.cpp vulkan/debug_tee.cpp src/debug_log.cpp
  src/native_ui_update.cpp vulkan/update_ps5.cpp
- vulkan/gpt_runtime_vulkan.cpp vulkan/http_server.cpp vulkan/model_downloader_ps5.cpp
+ inference/adapters/llama/vulkan.cpp vulkan/http_server.cpp vulkan/model_downloader_ps5.cpp
  vulkan/ui/backend.cpp vulkan/ui/program.cpp)
 media_definitions=()
-media_definitions=(-DPROSPERO_PRISM_RUNTIME -DPROSPERO_MEDIA_VULKAN)
-# Kokoro's archived entrypoint asks for a backend reservation; bind it to Vulkan.
-kokoro_archive="$work/libkokoro-tts-vulkan.a"
-llvm-objcopy-18 --redefine-sym ps5_agc_backend_reserve=prospero_media_vk_reserve \
- "$root/vendor/lib/libkokoro-tts.a" "$kokoro_archive"
+# Speech is kokoro.cpp on the shared ggml/Vulkan backend (inference/adapters/media/kokoro_ps5.cpp); the
+# prebuilt OpenCL archive it replaces is no longer linked.
+kokoro_archives=("$runtime_build/kokoro/libkokoro.a"
+ "$runtime_build/kokoro/highway/libhwy.a")
+# Not `archive`: that variable already holds RADV's library for radv_link_recipe below.
+for kokoro_input in "${kokoro_archives[@]}"; do
+ [[ -f $kokoro_input ]] || { echo "Run make vulkan-runtime-libs first: missing $kokoro_input" >&2; exit 2; }
+done
 while IFS= read -r relative; do
  [[ -n $relative && $relative != \#* ]] || continue
  [[ $relative != gfx/gl_program.cpp && $relative != platform/ps5/display_egl.cpp ]] || continue
@@ -62,8 +69,18 @@ for relative in "${sources[@]}"; do
  abi_definitions=()
  abi_definitions+=(-DGGML_MAX_NAME=160)
  case "$relative" in
-  src/sd_runtime_ps5.cpp)
+  inference/adapters/media/stable_diffusion_ps5.cpp)
    media_includes=(-I "$root/.deps/stable-diffusion-vulkan/include");;
+  inference/adapters/media/stable_audio_ps5.cpp)
+   media_includes=(-I "$root/build/audio-cpp-upstream/include");;
+  inference/adapters/media/ace_step_ps5.cpp)
+   media_includes=(-I "$root/build/audio-cpp-upstream/include");;
+  inference/adapters/media/chatterbox_ps5.cpp)
+   media_includes=(-I "$root/build/audio-cpp-upstream/include"
+    -I "$root/.deps/pacbrew/v0.40.2/sysroot/user/homebrew/include");;
+  inference/adapters/media/kokoro_ps5.cpp)
+   media_includes=(-I "$root/.deps/kokoro.cpp/include"
+    -I "$root/build/ggml-upstream/include");;
  esac
  object="$work/obj/${relative//\//_}.o"
  ninja_inputs=("$root/$relative" "$root/tooling/prospero-clang18")
@@ -78,16 +95,22 @@ for relative in "${sources[@]}"; do
  ninja_edge CXX "$object" env PS5_PAYLOAD_SDK="$sdk" USE_CCACHE="${USE_CCACHE:-1}" sh "$root/tooling/prospero-clang18" \
   -std=c++20 -O2 -fexceptions -fcxx-exceptions -frtti -Wall -Wextra -Wno-missing-field-initializers \
   -ffunction-sections -fdata-sections -DPS5_LLAMA_VULKAN -DPROSPERO_UI_VULKAN -DPROSPERO_VULKAN_RUNTIME \
-  -DPS5_MEDIA_AUDIO -DPS5_MEDIA_IMAGE -DPS5_SANDBOX_APP -DPS5_APP_HAS_DSO_HANDLE -DPS5_SD_GENERATE -DCL_TARGET_OPENCL_VERSION=120 -DGL_GLEXT_PROTOTYPES \
+  -DPS5_MEDIA_AUDIO -DPS5_MEDIA_IMAGE -DPS5_SANDBOX_APP -DPS5_APP_HAS_DSO_HANDLE -DPS5_SD_GENERATE -DGL_GLEXT_PROTOTYPES \
   -DSDL_MAIN_HANDLED -DSDL_STATIC_LIB -DUSING_GENERATED_CONFIG_H \
   "${media_definitions[@]}" "${abi_definitions[@]}" "${media_includes[@]}" -I "$root/include" -I "$root/vulkan" -I "$root/vulkan/ui" -I "$kit_stage/src" -I "$work/generated" \
-  -I "$root/vendor/ps5/sdl/include" -I "$root/vendor/ps5/sdl/include/SDL2" \
+  -I "$root/vendor/ps5/sdl/include" -I "$root/vendor/ps5/sdl/include/SDL2" -I "$root/inference" \
   -I "$llama_source/vendor" -I "$llama_source/include" -I "$llama_source/ggml/include" \
   -I "$root/vendor/include" -I "$root/src" -I "$root/third_party/update-check" "${update_definitions[@]}" -I "$root/.deps/Vulkan-Headers/include" -I "$root/.deps/ps5-opengl/current/include" \
   -MD -MF "$object.d" -c "$root/$relative" -o "$object"
  objects+=("$object")
 done
 ninja_run
+# ONNX Runtime is compiled into one relocatable object because the title loader cannot load
+# a custom DSO. Keep OrtGetApiBase reachable in the final eboot for native ORT adapters.
+bash "$root/tools/build-onnxruntime-ps5.sh"
+ort_object="$root/build/onnxruntime-ps5/Release/libonnxruntime-ps5.o"
+[[ -f $ort_object ]] || { echo "Missing embedded ONNX Runtime object: $ort_object" >&2; exit 2; }
+objects+=("$ort_object")
 # The model downloader's HTTPS (vulkan/net): libcurl with OpenSSL, libpsl and zstd from the
 # pinned PacBrew prefix, linked into one object with console_curl.c. What that file puts in
 # place of libc for them (name lookup, fcntl on sockets, a few more functions) gets a name of
@@ -135,6 +158,8 @@ for lib in Agc AgcDriver; do
 done
 cc -O2 -fPIC -c "$root/tooling/native/prosperoai_import_stub_common_dialog.cpp" -o "$work/obj/CommonDialog.o"
 "$sdk/bin/prospero-lld" --shared -soname libSceCommonDialog.prx -o "$work/stubs/libSceCommonDialog.so" "$work/obj/CommonDialog.o"
+cc -O2 -fPIC -c "$root/tooling/native/prosperoai_import_stub_audio_in.cpp" -o "$work/obj/AudioIn.o"
+"$sdk/bin/prospero-lld" --shared -soname libSceAudioIn.prx -o "$work/stubs/libSceAudioIn.so" "$work/obj/AudioIn.o"
 source "$ref/tools/radv-link.sh"
 export PS5_CLANG=${PS5_CLANG:-clang-18}
 radv_link_recipe "$ref" "$sdk" "$archive"
@@ -144,27 +169,42 @@ for symbol in pthread_once strtof strtod fseek ftell strcasestr; do radv_link_fl
 for symbol in fopen freopen open stat lstat mkdir rmdir unlink remove rename access opendir \
   sceKernelOpen sceKernelMkdir sceKernelRmdir sceKernelUnlink; do radv_link_flags+=("--wrap=$symbol"); done
 # What the app prints for the console's log is also kept by the debug log (vulkan/debug_tee.cpp).
-radv_link_flags+=(--wrap=sceKernelDebugOutText)
+radv_link_flags+=(--wrap=sceKernelDebugOutText --undefined=OrtGetApiBase)
 cat > "$work/app-compat.map" <<'MAP'
 { local: pthread_once; strtof; strtod; fseek; ftell; strcasestr; gl*; hui_release_splash; __wrap_*; };
 MAP
-sd_archives=("$root/build/vulkan-runtime-ps5/sd/libstable-diffusion.a")
-"$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" --wrap=sceAgcInit \
+sd_archives=("$runtime_build/sd/libstable-diffusion.a")
+audio_build="$runtime_build/audio-cpp"
+audio_archives=("$runtime_build/bin/libaudiocpp.a" "$audio_build/libengine_runtime.a"
+ "$audio_build/external/sentencepiece/src/libsentencepiece.a" "$audio_build/libcjson_vendor.a"
+ "$audio_build/libyaml_vendor.a")
+audio_archives+=("$root/.deps/pacbrew/v0.40.2/sysroot/user/homebrew/lib/libFLAC.a")
+for audio_input in "${audio_archives[@]}"; do
+ [[ -f $audio_input ]] || { echo "Run make vulkan-runtime-libs first: missing $audio_input" >&2; exit 2; }
+done
+"$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr --no-dynamic-linker "${radv_link_flags[@]}" --wrap=sceAgcInit \
  --version-script "$work/app-compat.map" --version-script "$ref/tooling/native/app-symbols.map" --exclude-libs=ALL -e _start \
  -o "$work/llvm-pie.elf" "$work/obj/app_crt.o" "$work/obj/app_cpp_runtime.o" "${objects[@]}" "$work/obj/llama_compat.o" \
- "$work/stubs/libSceAgc.so" "$work/stubs/libSceAgcDriver.so" "$work/stubs/libSceCommonDialog.so" \
+ "$work/stubs/libSceAgc.so" "$work/stubs/libSceAgcDriver.so" "$work/stubs/libSceCommonDialog.so" "$work/stubs/libSceAudioIn.so" \
  --start-group "$root/vendor/ps5/sdl/lib/libSDL2.a" "$llama_build/src/libllama.a" \
- "$llama_build/ggml/src/libggml.a" "$llama_build/ggml/src/libggml-base.a" \
- "$llama_build/ggml/src/libggml-cpu.a" "$llama_build/ggml/src/ggml-vulkan/libggml-vulkan.a" \
- "${sd_archives[@]}" \
- "$root/vendor/lib/libstable-audio.a" "$kokoro_archive" "$root/vendor/lib/libespeak-ng.a" \
+ "$ggml_build/src/libggml.a" "$ggml_build/src/libggml-base.a" \
+ "$ggml_build/src/libggml-cpu.a" "$ggml_build/src/ggml-vulkan/libggml-vulkan.a" \
+ "${sd_archives[@]}" "${audio_archives[@]}" \
+ "${kokoro_archives[@]}" "$root/vendor/lib/libespeak-ng.a" \
  "$root/vendor/lib/libcompat.a" --end-group \
  --defsym=vkGetInstanceProcAddr=radv_GetInstanceProcAddr --defsym=vkGetDeviceProcAddr=vk_common_GetDeviceProcAddr \
  --defsym=vkCmdCopyBuffer=vk_common_CmdCopyBuffer --defsym=vkGetPhysicalDeviceFeatures2=vk_common_GetPhysicalDeviceFeatures2 \
  --defsym=execlp=prospero_execlp --defsym=posix_madvise=prospero_posix_madvise \
  "${radv_link_inputs[@]}" --as-needed "$sdk"/target/lib/*.so
+if readelf -d "$work/llvm-pie.elf" | grep 'libonnxruntime' >/dev/null; then
+ echo "ONNX Runtime must be statically linked into eboot, not listed as a dependency" >&2
+ exit 1
+fi
+nm "$work/llvm-pie.elf" | grep ' OrtGetApiBase$' >/dev/null || {
+ echo "Embedded ONNX Runtime entry point is missing from the linked eboot" >&2; exit 1;
+}
 "$root/build/host/ps5-native-tool" link --in "$work/llvm-pie.elf" --out "$work/eboot.elf" --stub-dir "$sdk/target/lib" \
- --stub "$work/stubs/libSceAgc.so" --stub "$work/stubs/libSceAgcDriver.so" --stub "$work/stubs/libSceCommonDialog.so" \
+ --stub "$work/stubs/libSceAgc.so" --stub "$work/stubs/libSceAgcDriver.so" --stub "$work/stubs/libSceCommonDialog.so" --stub "$work/stubs/libSceAudioIn.so" \
  --module-sdk 0x02000009 --companion-sdk 0x08050001 --file-name eboot.elf
 "$root/build/host/ps5-native-tool" self --sign --in "$work/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F
 cp "$root/runtime/libc.prx" "$app/sce_module/"
@@ -185,6 +225,7 @@ cp "$fonts/"*.huifont "$fonts/"*.txt "$app/assets/fonts/"
 cp -a "$kit/assets/audio/sfx/." "$app/assets/audio/sfx/"
 mkdir -p "$app/assets/web/fonts"
 cp -a "$root/assets/web/." "$app/assets/web/"
+rm -rf "$app/assets/audio/chatterbox-voices"
 for font in Inter-Regular.ttf Inter-SemiBold.ttf Montserrat-Medium.ttf Inter-LICENSE.txt Montserrat-LICENSE.txt; do
     cp "$root/.deps/ui-kit/checkout/third_party/fonts/$font" "$app/assets/web/fonts/"
 done
@@ -210,7 +251,7 @@ make --no-print-directory -s -C "$root/third_party/self-update-helper" \
 python3 "$root/tools/validate-loader-elf.py" "$work/self-update/self-updater.elf"
 cp "$work/self-update/self-updater.elf" "$app/self-updater.elf"
 cp "$root/third_party/miniz/LICENSE" "$app/licenses/miniz-MIT.txt"
-cp "$llama_source/LICENSE" "$app/licenses/Prism-llama-MIT.txt"
+cp "$llama_source/LICENSE" "$app/licenses/llama.cpp-MIT.txt"
 cp "$root/THIRD_PARTY_NOTICES.md" "$app/licenses/THIRD_PARTY_NOTICES.md"
-printf '%s\n' 'Prism llama e8fd209c975c80aa7fb36a8423571ff3b1b7e955; GGML_MAX_NAME=160' > "$app/licenses/vulkan-runtime-source.txt"
+printf '%s\n' 'llama.cpp cb7934c52ca8710994b2ecc19775ebefcfdb8d01; GGML v0.26.0 d7cb574130e6f01ad25b3289685489200febcd74; GGML_MAX_NAME=160' > "$app/licenses/vulkan-runtime-source.txt"
 echo "Native Vulkan app folder: $app"

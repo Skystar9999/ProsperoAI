@@ -20,11 +20,18 @@
 #include "platform/ps5/audio_out.hpp"
 #include "platform/ps5/system.hpp"
 #ifdef PS5_LLAMA_VULKAN
+#include "gpt_runtime.hpp"
+#include "inference_config.hpp"
+#include "runtime_settings.hpp"
 #include "http_server.hpp"
+extern "C" int sceKernelUsleep(std::uint32_t microseconds);
 #endif
 #include <SDL2/SDL.h>
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <unistd.h>
 #include <vector>
 
 void prospero_setup_sdl_memory();
@@ -101,6 +108,8 @@ void input_event(const gpt_input_event_t &event, hui::InputFrame &input, prosper
     else if (event.key == GPT_INPUT_L2 || event.key == GPT_INPUT_R2)
         input.pressed |=
             hui::action_bit(event.key == GPT_INPUT_L2 ? Action::jump_prev : Action::jump_next);
+    else if (event.key == GPT_INPUT_L3)
+        input.pressed |= hui::action_bit(Action::l3);
     else if (event.key == GPT_INPUT_SCROLL_UP)
         ui.scroll(-120);
     else if (event.key == GPT_INPUT_SCROLL_DOWN)
@@ -112,6 +121,94 @@ void input_event(const gpt_input_event_t &event, hui::InputFrame &input, prosper
     else if (event.key == GPT_INPUT_ENTER)
         ui.submit(feedback);
 }
+
+#ifdef PS5_LLAMA_VULKAN
+void configure_vulkan_tuning_profile()
+{
+    const auto clear_profile_knobs = [] {
+        unsetenv("GGML_VK_PS5_DMMV_WG");
+        unsetenv("GGML_VK_PS5_DMMV_SUBGROUP");
+        unsetenv("GGML_VK_PS5_RM_STDQ");
+        unsetenv("GGML_VK_PS5_RM_KQ");
+        unsetenv("GGML_VK_PS5_SUBMIT_MFLOP");
+    };
+    clear_profile_knobs();
+
+    char profile_text[32]{};
+    const char *profile = "ps5";
+    const std::string profile_path = prospero::storage().data_root + "/vulkan_tuning_profile.txt";
+    std::FILE *profile_file = std::fopen(profile_path.c_str(), "r");
+    if (!profile_file)
+    {
+        // Keep a visible, editable persistent default beside the user's models/settings.
+        if (std::FILE *created = std::fopen(profile_path.c_str(), "w"))
+        {
+            std::fputs("ps5\n", created);
+            std::fclose(created);
+        }
+        profile_file = std::fopen(profile_path.c_str(), "r");
+    }
+    if (std::FILE *file = profile_file)
+    {
+        const std::size_t size = std::fread(profile_text, 1, sizeof(profile_text) - 1, file);
+        const bool failed = std::ferror(file) != 0 || size == sizeof(profile_text) - 1;
+        std::fclose(file);
+        while (profile_text[0] == ' ' || profile_text[0] == '\t' ||
+               profile_text[0] == '\r' || profile_text[0] == '\n')
+            std::memmove(profile_text, profile_text + 1, std::strlen(profile_text));
+        std::size_t length = std::strlen(profile_text);
+        while (length && (profile_text[length - 1] == ' ' || profile_text[length - 1] == '\t' ||
+                          profile_text[length - 1] == '\r' || profile_text[length - 1] == '\n'))
+            profile_text[--length] = '\0';
+        if (!failed && (std::strcmp(profile_text, "ps5") == 0 ||
+                        std::strcmp(profile_text, "ps5pro") == 0))
+            profile = profile_text;
+        else if (size != 0)
+            prospero::debug::line("app", "invalid Vulkan tuning profile; using ps5");
+    }
+
+    setenv("PROSPERO_VULKAN_PROFILE", profile, 1);
+    if (std::strcmp(profile, "ps5pro") == 0)
+    {
+        setenv("GGML_VK_PS5_DMMV_WG", "1", 1);
+        setenv("GGML_VK_PS5_DMMV_SUBGROUP", "32", 1);
+    }
+
+    // Optional PR #29-style overrides are applied after the selected profile.
+    if (std::FILE *file = std::fopen("/app0/vulkan_env.txt", "r"))
+    {
+        char line[512];
+        while (std::fgets(line, sizeof(line), file))
+        {
+            char *start = line;
+            while (*start == ' ' || *start == '\t')
+                ++start;
+            char *end = start + std::strlen(start);
+            while (end > start && (end[-1] == '\n' || end[-1] == '\r' ||
+                                   end[-1] == ' ' || end[-1] == '\t'))
+                *--end = '\0';
+            char *equals = std::strchr(start, '=');
+            if (*start == '#' || equals == nullptr || equals == start || equals[1] == '\0')
+                continue;
+            *equals = '\0';
+            const auto valid_name_char = [](char c, bool first) {
+                return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' ||
+                       (!first && c >= '0' && c <= '9');
+            };
+            bool valid_name = true;
+            for (char *p = start; *p; ++p)
+                if (!valid_name_char(*p, p == start))
+                    valid_name = false;
+            if (!valid_name)
+                continue;
+            setenv(start, equals + 1, 1);
+            prospero::debug::line("app", "vulkan_env %s=%s", start, equals + 1);
+        }
+        std::fclose(file);
+    }
+    prospero::debug::line("app", "Vulkan tuning profile: %s", profile);
+}
+#endif
 } // namespace
 
 int main()
@@ -120,9 +217,24 @@ int main()
     // Filesystem access first, while this is the only thread: every path the app uses
     // is settled here (vulkan/storage.cpp).
     const prospero::Storage &storage = prospero::prepare_storage();
+#ifdef PS5_LLAMA_VULKAN
+    gpt_runtime_set_idle_unload_timeout(prospero_settings::get().idle_unload_minutes * 60);
+    // The UI renderer also creates a Vulkan instance. llama.cpp snapshots its
+    // profiling environment while the first Vulkan instance is initialized,
+    // so configure it before constructing the display rather than on the first
+    // inference request.
+    if (access("/app0/vulkan_profile.txt", F_OK) == 0)
+    {
+        setenv("GGML_VK_PERF_LOGGER", "1", 1);
+        setenv("GGML_VK_PERF_LOGGER_FREQUENCY", "1", 1);
+    }
+#endif
 #endif
     // The debug log's switch is read here, before anything else can go wrong.
     prospero::debug::start("/download0/ProsperoAI/logs");
+#ifdef PS5_LLAMA_VULKAN
+    configure_vulkan_tuning_profile();
+#endif
 #ifdef PROSPERO_UI_VULKAN
     prospero::debug::line("app", "filesystem access=%d route=%s app=%s data=%s models=%s moved=%u",
                           storage.access, storage.route, storage.app_dir.c_str(),
@@ -164,11 +276,19 @@ int main()
         hui::sys::log("[prosperoai] scripted run");
     hui::gfx::Canvas picture;
     auto previous = hui::sys::monotonic_us();
+#ifdef PS5_LLAMA_VULKAN
+    const unsigned generation_ui_sleep_ms =
+        prospero::read_inference_setting("/app0", "ui_sleep_ms.txt", 50, 0, 1000);
+#endif
     bool first_frame = true;
     while (!ui.quit_requested() && !script.quit())
     {
         // Animation time runs from frame start to frame start, and is clamped.
         const auto now = hui::sys::monotonic_us();
+#ifdef PS5_LLAMA_VULKAN
+        if (!first_frame)
+            gpt_runtime_check_configured_idle_unload();
+#endif
         const float elapsed = static_cast<float>(now - previous) / 1000000.0f;
         const float dt = std::clamp(elapsed, 0.001f, 0.05f);
         previous = now;
@@ -214,6 +334,10 @@ int main()
         }
         if (!display.swap())
             break;
+#ifdef PS5_LLAMA_VULKAN
+        if (generation_ui_sleep_ms && gpt_runtime_generations_running() != 0)
+            sceKernelUsleep(generation_ui_sleep_ms * 1000);
+#endif
         if (first_frame)
         {
             // The console's splash stays up until this first picture; the model

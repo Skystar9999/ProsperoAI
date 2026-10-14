@@ -50,6 +50,9 @@ void gpt_runtime_refresh_models()
 {
     off_ui();
 }
+void gpt_runtime_set_idle_unload_timeout(unsigned)
+{
+}
 unsigned gpt_runtime_model_count()
 {
     off_ui();
@@ -75,6 +78,9 @@ const char *gpt_runtime_model_purpose(unsigned)
 {
     off_ui();
     return "text-to-text";
+}
+bool gpt_runtime_loaded_model(char *id, std::size_t ic, char *name, std::size_t nc) {
+    if(id && ic) id[0]=0; if(name && nc) name[0]=0; return false;
 }
 bool gpt_runtime_select_model(unsigned index)
 {

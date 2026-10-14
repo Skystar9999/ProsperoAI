@@ -1,11 +1,12 @@
 # vulkan-runtime
 
-One inference runtime for PS5 text, images, audio and voice. The app links the complete
-Prism llama/ggml pin `e8fd209c975c80aa7fb36a8423571ff3b1b7e955`, one ggml ABI
-(`GGML_MAX_NAME=160`), source-built SD `f89d9b13d730eabeede7314ce49dacd18d3c90c2`
-and the Vulkan media bridge. No AGC inference backend, private ggml copies or legacy
-scratch allocator are linked. CPU operations remain where the media bridge requires
-them; RADV still links the console AGC platform driver.
+The PS5 runtime is migrating to upstream llama.cpp `cb7934c52ca8710994b2ecc19775ebefcfdb8d01`
+and one shared upstream GGML v0.26.0 `d7cb574130e6f01ad25b3289685489200febcd74` ABI
+(`GGML_MAX_NAME=160`). Text, source-built Stable Diffusion, audio.cpp and Kokoro link to the
+same upstream GGML/Vulkan target through model adapters. The production app keeps the RADV
+link recipe and console AGC platform-driver imports; AGC inference is removed. Prism's private
+PTQ1_0/PQ2_0 quant types are not part of upstream GGML and need a compatibility adapter before
+the Bonsai preset can be enabled on this runtime.
 
 ## Build and compatibility
 
@@ -15,7 +16,7 @@ the configured release title. Neither command deploys. `tools/build-vulkan-runti
 binaries use the same `vulkan-runtime` name. Historical make targets remain aliases. All previous app Vulkan/Bonsai
 folder aliases now use this runtime. The pinned Bonsai PTQ1_0 preset is included.
 
-Existing GGUF models continue to work. A legacy preset ID can alias its installed GGUF;
+Standard GGUF models use the upstream llama.cpp adapter. A legacy preset ID can alias its installed GGUF;
 the router forwards the actual GGUF ID to llama. Old `.ps5lm` data is preserved but is
 not executed: download the matching GGUF preset before using that legacy ID. Console
 regressions cover Mistral, Qwen 3.5, MiniCPM5 and exact Bonsai 2 27B.
@@ -24,13 +25,13 @@ regressions cover Mistral, Qwen 3.5, MiniCPM5 and exact Bonsai 2 27B.
 
 The common-ABI console Bonsai benchmark generates 94 identical greedy tokens on three
 warm runs: **11.202328 tokens/s median**. Thinking, 4K/16K context changes, older GGUFs
-and return to Bonsai pass. See `performance/2026-10-11/vulkan-runtime-bonsai.json`.
+and return to Bonsai pass. The retained PS5 summary is the [final three-round model record](performance/2026-10-14/pr27-all-models-3x-final.json).
 
 The [AGC/media comparison](MEDIA_VULKAN_COMPARISON.md) records earlier comparison
 builds: SD repeat median 46.048 → 1.001 seconds; Stable Audio 368.103 → 124.106;
 Kokoro 84.740 → 85.152. This is a complete-implementation comparison, not an isolated
-GPU-driver test. Kokoro is approximately 0.5% slower. The unified build's separate
-functional media receipt is `performance/2026-10-11/vulkan-runtime-media.json`.
+GPU-driver test. Kokoro is approximately 0.5% slower. The detailed historical comparison
+records were removed from this PR; the retained current model summary is linked above.
 
 Host common-ABI tests perform actual Vulkan llama decode and media numerical checks.
 The bridge parity fixture makes 30 Vulkan calls and zero CPU-kernel fallback calls.

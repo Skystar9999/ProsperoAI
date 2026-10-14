@@ -648,3 +648,569 @@ bounded residency move to the subsequent draft PR.
   4 would have been rejected), and a realistic cold-load burst (the 6 static assets plus
   `/v1/models` and `/api/conversations`) all succeeded concurrently. Host lint and all 55
   tests pass.
+
+## 2026-10-12 — RDNA2 UMA mul_mat_vec row heuristic (PS5-only), measured +4%
+
+- GPU timestamps on `PPSA99023` identified the decode hotspots on Mistral 7B Q4_0:
+  `MUL_MAT_VEC q4_0 m=14336,n=1,k=4096` at ~6.0-7.7 ms and the fused
+  `MUL_MAT_ADD ... m=4096,k=14336` at ~3.5-5.3 ms out of ~15.8 ms GPU time per token.
+  Profiling itself costs throughput, so its tokens/s is not comparable with a normal run.
+- The pinned llama.cpp gives AMD GCN `rm_stdq = 2` (4 output rows per workgroup for
+  standard quants) but leaves RDNA2 at the conservative default of 1 (2 rows). The PS5-only
+  build patch in `tools/prepare-llama-ps5-io.py` now sets `rm_stdq = 2` for
+  `AMD_RDNA2 && uma`, which is Oberon here, and leaves the generic upstream heuristic alone.
+- Fair A/B, identical folder deploy and identical protocol (Mistral 7B Q4_0, context 512,
+  batch/ubatch 128, 64 generated tokens, 3 runs, no profiler build):
+  reference median `62.9287` tokens/s, 4-row variant median `65.5106` tokens/s, about
+  `+4.1%`. All 6 runs passed with valid deterministic output.
+- The winning `eboot.bin` was rebuilt from the committed patch and deployed over FTP with
+  mode `755`; the deployed build re-measured `65.4261` tokens/s median (3/3 passed), which
+  confirms the gain comes from the committed source and not from the experiment tree.
+- Evidence: `performance/2026-10-12/rdna2-rm-stdq-{baseline,4rows,4rows-deployed}.json`.
+
+## 2026-10-12 — RDNA2 UMA mat-vec workgroup size, and two rejected variants
+
+- Continued the same mat-vec tuning with identical protocol (Mistral 7B Q4_0, context 512,
+  batch/ubatch 128, 64 generated tokens, 3 runs, folder deploy of only `eboot.bin` at `755`).
+  Each variant was built from the pinned source, deployed and measured on `PPSA99023`.
+- Rejected: eight output rows per workgroup (`rm_stdq = 4`) regressed to `61.0711` tokens/s
+  from the four-row `65.4261`, so four rows is the peak of that knob, not a lower bound.
+- Accepted: upstream enables the larger hybrid-reduction mat-vec workgroup
+  (`DMMV_WG_SIZE_LARGE`, 4x subgroup threads) only for NVIDIA and Intel. Enabling it for
+  `AMD_RDNA2 && uma` on the narrower projections (`m <= 8192 && k >= 1024`, excluding Q6_K
+  as upstream does) measured `66.4924` tokens/s, about `+1.6%` over four-row alone, with all
+  three runs (66.34-66.69) above the previous spread.
+- Rejected: removing the `m <= 8192` limit so the 14336-row FFN mat-vec also uses the large
+  workgroup regressed to `62.1261` tokens/s. The hotspot wants few, wide workgroups; only
+  the narrow projections benefit from spreading.
+- Both accepted patches together, rebuilt from the committed `tools/prepare-llama-ps5-io.py`
+  and deployed, measure `66.6161` tokens/s median (3/3 passed) against the `62.9287`
+  baseline, about `+5.9%`. A greedy correctness prompt on the deployed build answers
+  correctly (primes and Tokyo), so the gain is not from degraded output.
+- Host suite: 56 of 58 tests pass with `HOST_CXX=g++`. `test_downloader_fit` fails only on
+  g++ `-Werror` warnings that clang does not emit, and `test_self_update` is the known
+  managed-sandbox Unix-socket limitation. With the default clang, 7 tests cannot link
+  because this host is missing `libclang_rt.asan`; none of this touches the build patch.
+- Evidence: `performance/2026-10-12/rdna2-rm-stdq-8rows.json`,
+  `rdna2-dmmv-large-wg-m8192.json`, `rdna2-dmmv-large-wg-all-m.json`,
+  `rdna2-combined-deployed.json`.
+
+## 2026-10-12 — forcing wave32 for mat-vec showed no gain; run-to-run noise quantified
+
+- Forcing a required subgroup size of 32 for the mat-vec pipelines on `AMD_RDNA2 && uma`
+  (through `subgroup_size_control`, also scaling the workgroup sizes) measured `65.9353`
+  tokens/s against the committed build's `66.6161`, so it was reverted rather than kept.
+- Re-measuring the unchanged committed build right afterwards gave `66.1684` tokens/s, so
+  repeated identical builds vary by roughly `0.5` tokens/s under this protocol. The wave32
+  result is inside that band: the honest reading is no measurable gain, not a regression.
+  It also means the workgroup-size step above (`+1.06` tokens/s) is a small effect at the
+  edge of the noise, while the four-row step (`+2.5`) and the combined `62.93 -> 66.6`
+  (about `+5.9%`) are well clear of it.
+- The console now runs the committed build from `4d67511`, re-uploaded and verified after
+  the experiment.
+- Evidence: `performance/2026-10-12/rdna2-dmmv-wave32-rejected.json`,
+  `rdna2-combined-restored.json`.
+
+## 2026-10-12 — Kokoro profile: the GPU is not where its time goes
+
+- Kokoro does not use ggml at all. It is the prebuilt `vendor/lib/libkokoro-tts.a` (an Adreno
+  OpenCL port of kokoro-82m) running against the hand-written OpenCL implementation in
+  `inference/backends/vulkan/opencl_compat.cpp`, which already forwards mat-mul and unary kernels to Vulkan through
+  `prospero_media_vk` and runs everything else on the CPU.
+- Added per-kernel accounting to that bridge (`begin_kernel`/`end_kernel`/`record_host`) plus
+  timers on the data-moving OpenCL entry points, and routed `print_stats()` into klog through
+  a log sink, since a PS5 title drops libc's stderr.
+- Measured on `PPSA99023`, one sentence, 79800 samples at 24 kHz (3.3 s of audio), 131.3 s
+  wall: all OpenCL kernels together account for `1.69` s on the CPU and `0.29` s on the GPU,
+  and the OpenCL API timers are too small to reach the top sixteen. The most expensive CPU
+  kernels are `lstm_seq` (12 calls, 0.84 s), `weightnorm_recon` (38, 0.42 s), `pad_rows`
+  (10, 0.11 s) and `im2col_ncl` (33, 0.065 s).
+- So about 98.5% of the wall time is inside the prebuilt archive's own CPU code, which never
+  reaches our OpenCL layer. Porting the remaining shim kernels to Vulkan can save at most
+  about 1.7 s of 131 s, which also explains why the earlier AGC/Vulkan media comparison
+  measured voice as roughly 0.5% slower: it optimized the wrong layer.
+- Evidence: `performance/2026-10-12/kokoro-kernel-profile.txt`.
+
+## 2026-10-12 — kokoro.cpp (ggml/Vulkan speech) builds and runs on the host
+
+- Pinned `kokoro.cpp` at `a9e31430838c8bdc3d4beaaab62753681b9f7839` as `kokoro-cpp` in
+  `tools/deps.json`, checking out only its Highway submodule: `KOKORO_GGML_DIR` points at the
+  pinned Prism ggml this build already uses, so no second ggml copy enters the tree.
+- `tools/build-kokoro-host.sh` configures it against `build/prism-llama-source/ggml` with
+  `.deps/Vulkan-Headers`. Without the pinned headers ggml-vulkan fails to compile, because
+  Debian's 1.3.239 headers have no `VK_EXT_layer_settings`. CMake reports
+  "using external ggml checkout" and "Vulkan backend: enabled"; its own 7 tests pass.
+- Host measurement, `kokoro-82m-f16.gguf` plus the `af_heart` voice pack, one sentence,
+  78600 samples at 24 kHz (3.28 s of audio), `KOKORO_BENCH=1`:
+  CPU (4 threads) `3959.81 ms` total, of which the generator is `3578.89 ms` and the decoder
+  `131.13 ms`. The same run on this host's Intel HD 630 Vulkan takes `8335.10 ms`, which says
+  nothing about RDNA2 and only proves the Vulkan path works end to end.
+  For contrast the console's current prebuilt OpenCL Kokoro needs about 130 s for the same
+  sentence, so even a weak host CPU on ggml is roughly 33x faster than what ships today.
+- CPU and Vulkan output: identical length and RMS (1061.6 vs 1062.6), frame-envelope
+  correlation `0.9983`, while raw samples differ (correlation 0.33). That is the model's
+  stochastic harmonic noise source, which kokoro.cpp documents as expected.
+- PS5 risks retired early: kokoro.cpp needs only `espeak_Initialize`, `espeak_SetVoiceByName`
+  and `espeak_TextToPhonemes`, all three already defined by `vendor/lib/libespeak-ng.a`, and
+  its CMake takes `ESPEAK_NG_INCLUDEDIR`/`ESPEAK_NG_LIB` for a cross build.
+
+## 2026-10-12 — Kokoro now runs on ggml/Vulkan: 130.5 s to 0.26 s
+
+- Replaced the prebuilt OpenCL speech archive with kokoro.cpp built from source against the
+  same pinned ggml and Vulkan backend as text. New `src/kokoro_runtime_ps5.cpp` implements
+  `ps5_kokoro_tts_generate` over kokoro.cpp's C ABI, writes the 16-bit mono WAV itself and
+  points espeak-ng at the model folder's `assets` through `KOKORO_ESPEAK_DATA_PATH`.
+- `tools/vulkan-runtime/CMakeLists.txt` adds kokoro.cpp next to llama and stable-diffusion.
+  It reuses the `ggml` target already created there, so there is still one ggml ABI and one
+  Vulkan backend. Cross-build details: `HWY_COMPILE_ONLY_STATIC` with AVX2/FMA/F16C, because
+  Highway's AVX-512 paths do not compile for `x86_64-sie-ps5` and the console is one fixed
+  CPU; and an explicit imported espeak-ng target, because pkg-config would otherwise hand the
+  cross compile the host's `/usr/include`.
+- `tools/build-vulkan-native.sh` links `libkokoro.a` and `libhwy.a` instead of
+  `libkokoro-tts.a`, and no longer rewrites that archive's backend-reservation symbol.
+- ELF foundation unchanged: entry `0x120`, 14 program headers, the same 15 NEEDED PRX modules
+  as the verified build, with no new dependency.
+- Measured on `PPSA99023`, same sentence as the earlier profile, 78600 samples at 24 kHz
+  (3.275 s of audio): cold `0.612214` s, warm `0.258404` s, backend reported as `Vulkan`,
+  459 tensors loaded. The prebuilt archive needed `130.5` s warm for the same sentence, so
+  this is roughly a 505x reduction and 12.7x faster than real time.
+- Output is correct, not just fast: the console WAV and the host CPU reference have identical
+  rate, channels, width and sample count, peaks of 13259 against 13468, RMS 1063.4 against
+  1061.6 and frame-envelope correlation `0.9985`.
+- Regressions checked after the link change: Mistral 7B Q4_0 decode `66.8337` tokens/s (same
+  band as before) and SD-Turbo `30.4` s, matching its `30.324` s baseline. The OpenCL shim
+  stays for image and audio; speech no longer touches it (`calls=0 cpu_kernel_calls=0`).
+- Not done yet: the download catalog still points at the old Adreno weights. A fresh install
+  does not fetch `kokoro-82m-f16.gguf` and `kokoro-voice-af_heart.gguf`; they were uploaded by
+  hand for this test. `vendor/lib/libkokoro-tts.a` is now unused but still in the tree.
+- Evidence: `performance/2026-10-12/kokoro-ggml-vulkan.json`.
+
+## 2026-10-12 — the speech download catalog, and two installer bugs it exposed
+
+- The Kokoro preset now installs the ggml runtime's own files: `kokoro-82m-f16.gguf` and
+  `kokoro-voice-af_heart.gguf` from `simonfxr/kokoro.cpp-GGUF` at revision
+  `c64650d0950e0b718b6eeb2f18620e25daf5c90b`, while the espeak-ng dictionaries and the licence
+  set stay in the existing pinned repository. The dead Adreno files (`weights/model.fp16.bin`
+  at 163.5 MB, the OpenCL kernels, `model.json`, the old voice pack and phoneme vocabulary)
+  are gone from the catalog, so the bundle is 165.2 MB of files the runtime actually reads.
+- `PresetFile` gained optional `repository`/`revision`, null unless a file comes from a
+  different repository than its preset. One speech preset can therefore span the two sources,
+  which the user agreed to, instead of mirroring the GGUFs or bundling dictionaries in the app.
+- Installing it on the console failed the first time: "Cannot install completed bundle:
+  Directory not empty (66)". `rename()` cannot move the staging folder onto an existing
+  bundle, so any upgrade of an installed preset was impossible, not just this one. The
+  installer now moves the old bundle aside, swaps the verified new one in, and puts the old one
+  back if that fails.
+- The swap then left `kokoro-82m-fp16.replaced` behind with the whole 163 MB of old weights:
+  `remove_tree` unlinked entries while the directory's own stream was open, which leaves
+  entries behind on this filesystem. It now reads the directory into a list first and deletes
+  afterwards.
+
+## 2026-10-12 — speech now faults on the console, and what is ruled out
+
+- After the preset switch, every speech request on `PPSA99023` ends in `SIGSEGV` on the
+  `prosperoai-http-conn` thread, right after kokoro.cpp logs the phonemes and builds its first
+  graph (`bert_predictor.graph_build` completes, the next bench stage never prints). The same
+  binary and the same model files produced five correct runs earlier in the day.
+- Ruled out by measurement, each with its own console run:
+  - the model files: the GGUFs on the console hash identically to the local copies that worked;
+  - the amount of free memory: `kokoro_memory free=7385 MiB total=11712 MiB` right before the
+    fault, and the fault also happens after loading only a 0.8B text model;
+  - a resident text model: it faults with no text model loaded at all (no `model ready` line);
+  - the Vulkan backend: it faults the same way with `KOKORO_BACKEND_CPU`;
+  - holding the ggml-vulkan device for the process lifetime (an extra backend reference taken
+    at startup, before any model);
+  - `GGML_MAX_NAME=160`: a host build with the console's ABI synthesizes correctly on both CPU
+    and Vulkan;
+  - my own later edits: the exact code of commit `16d47e2`, which produced the five good runs,
+    faults as well once the new preset is in place.
+- The one measurement that separates the working session from every run since: the title had
+  `11439 MiB` as its largest free block then, and has a stable `7385 MiB` now, across fresh
+  launches with nothing loaded. About 4 GB of direct memory is no longer available to the
+  title, which points at system state outside the process (the repeated faults and the two
+  165 MB installs happened in between) rather than at the speech code.
+- Next step is a console reboot to test that, since nothing in the process explains a missing
+  4 GB. A reboot needs the user's approval, so it has not been done.
+
+## 2026-10-12 — reboot recovery and Vulkan Kokoro preset
+
+- The user rebooted the console. FTP was available; `ps5vkctl` and klog needed their ELF payloads
+  resent before the test. The test title `PPSA99023` was stopped and unmounted before updating.
+- A new eboot was built and deployed to the test title. On a fresh app start, Kokoro generated
+  valid mono 24 kHz/16-bit audio repeatedly; the latest fresh run took `0.280395` s for
+  3.275 s of audio. The resulting WAV had 78,600 frames and peak 13,259.
+- A successful Mistral request followed by Kokoro still crashes the app during Kokoro graph
+  execution (`curl` sees an empty reply because the handler process exits). Thus a fresh-start
+  pass does not establish safe text-to-speech model switching; capture process state before
+  interpreting any subsequent connection refusal.
+- Renamed the catalog identity to `kokoro-82m-vulkan`, regenerated the preset header and updated
+  the benchmark/test references. The former preset is no longer offered. Its old installed
+  directory remains untouched and is explicitly excluded from text GGUF discovery.
+
+## 2026-10-12 — cross-media switch cycle and PNG output work
+
+- Rebuilt and deployed the current Vulkan source to `PPSA99023`, installed the pinned
+  `kokoro-82m-vulkan` preset, then ran the HTTP media harness. Text → SD-Turbo → text passed
+  (valid 512×512 TGA, 30.395 s); text → Stable Audio Open Small → text passed (valid stereo
+  44.1 kHz/16-bit WAV, 524,288 frames, 151.4 s).
+- The following Kokoro Vulkan request closed the HTTP connection and the app process exited
+  (`agent procs` was empty). This is reproducible after prior text, image and audio requests;
+  no Kokoro artifact was produced. A later klog window contained only system lines, not the
+  app trace. A persistent debug-log switch was placed in the test app's logs folder for the
+  next successful launch.
+- The runtime design uses a single process-wide `inference_mutex`; native UI and web requests
+  share the same selected-model router, and transitions release the previous text/media model
+  before preparation. This establishes serialization by code inspection, not successful
+  repeated-switch verification; the Kokoro crash remains a release gate.
+- SD now writes a PNG plus its existing TGA preview using the PNG encoder already present in
+  the Stable Diffusion archive. The API serves PNG with `image/png`; web rendering prefers the
+  PNG, while native preview/archive compatibility remains on TGA. Native build and PNG path
+  parser test pass. Console PNG generation is not yet verified because relaunch attempts now
+  return `0x80940033`.
+- Host native-controller and session-store tests pass with `ASAN_OPTIONS=detect_leaks=0`;
+  LeakSanitizer itself is unsupported under this environment's ptrace. The existing browser
+  history test still has two unrelated harness failures (`closeHistory` missing and a catalog
+  count mismatch).
+
+## 2026-10-12 — Kokoro scheduler cap restores complete modality switching
+
+- The first Kokoro BERT predictor graph was crashing in `ggml_backend_sched_alloc_graph` after
+  a successful text request. Vulkan heap trimming was ineffective (reported free memory stayed
+  at 7379 MiB), and a CPU-only control still crashed, ruling out a Vulkan-memory-only cause.
+- Capping Kokoro's scheduler graph and matching metadata reservation from 262144 to 131072
+  nodes fixed the failure. The change is applied by the guarded PS5 adapter
+  `tools/prepare-kokoro-ps5.py` during `build-vulkan-runtime.sh`, not by relying on an edit in
+  the downloaded source tree.
+- Final clean PS5 build passed a full API cycle on `PPSA99023`: text → SD-Turbo → text → Stable
+  Audio Open Small → text → Kokoro Vulkan → text. SD returned a valid 512×512 PNG (601520
+  bytes) alongside its TGA; Stable Audio returned stereo 44.1 kHz PCM (524288 frames); Kokoro
+  returned mono 24 kHz PCM (52200 frames). Every text round-trip passed. Stable Audio took
+  150.205 s, SD 29.764 s, and Kokoro 3.966 s. No samples clipped.
+- The runtime libraries and native app folder build completed; the PNG parser test and
+  `git diff --check` passed. The final deployed test title remains running on `PPSA99023`.
+- Upstream review: llama.cpp `v0.6.0` (`d812350`, ggml `v0.26.0`) is the latest release as of
+  this entry; our shared pin is `cb7934c` / ggml `v0.21.0`. Upgrade not yet attempted. Preserve
+  upstream behind adapters and verify supported ggml operations per backend; HIP's generic AMD
+  listing is not evidence of a PS5 ROCm/HIP runtime.
+
+## 2026-10-12 — Stable Audio 3 PS5 C API smoke launch
+
+- Built the pinned audio.cpp SA3 C API/runtime and ggml Vulkan static archives, then linked a
+  minimal `audiocpp_registry_create` test with ProsperoAI's native RADV recipe. The PS5 native
+  converter accepted the PIE and emitted `eboot.elf`; NEEDED includes the RADV PS5 winsys' AGC
+  platform-driver imports. This is not the retired AGC inference backend.
+- Backed up the registered, folder-backed `PPSA99023` eboot, confirmed `mounted:false`, replaced
+  only `eboot.bin`, and launched via `ps5vkctl` (`0x00000018`). The user observed that the app
+  crashed; immediately afterward `agent procs` was empty and ShadowMount reported `mounted:false`.
+  Restored the exact original eboot and verified the title is unmounted with no process running.
+- The klog receiver was unavailable (`3232` connection refused); the documented console
+  `/data/payloads/klogsrv-ps5.elf` did not exist. The ps5vkctl log records only the successful
+  launch call, so it does not distinguish a pre-main crash from a failure during registry
+  initialization. No checkpoint was loaded and no SA3 inference was attempted. Next diagnose the
+  PS5 runtime/import failure with klog available before making another launch attempt.
+
+## 2026-10-12 — restored test title boots
+
+- After restoring the saved PPSA99023 `eboot.bin`, the user launched the title successfully.
+  `ps5vkctl agent procs` reports PID 111 and `shadow info` reports `mounted:true`. The console
+  eboot size (114,253,716 bytes) matches the saved original exactly. This confirms the restored
+  app boots; it does not change the failed SA3 smoke result because the smoke eboot was no longer
+  installed for this launch.
+
+## 2026-10-12 — SA3 staged load and close diagnostics
+
+- Added compile-time `SA3_SMOKE_STAGE` to the PS5 C API harness: stage 1 initializes only the
+  audio.cpp registry; stage 2 loads the SA3 GGUF; stage 3 creates the Vulkan session; stage 4
+  generates audio. Each successful stage logs a marker and idles with `sceKernelUsleep` rather
+  than a tight `pause` loop. Stage 1 ELF passed the RADV/native conversion and signed ELF checks.
+- Restored the saved original eboot to `PPSA99023` and verified the remote SHA-256 exactly matched
+  the local backup. Stage 1 was then deployed to this folder-backed test title; its remote file
+  hash matched the local signed binary. Launch reached the registry-only ready marker. Stopping
+  via `ps5vkctl agent kill` yielded normal ShellCore suspend, process exit, `end_app_mount`, and
+  `mounted:false`; no kernel failure was seen at this stage.
+- Deployed stage 2 and verified the remote SHA-256. Klog confirmed the call to load the 1.68 GB
+  Stable Audio 3 Q8 GGUF, but no model-loaded marker followed. Kernel output reported `LOW FMEM`
+  (about 1,000 free system pages), swap increasing beyond 700 MB, and ShellCore main-thread
+  heartbeat freezes. A subsequent `agent procs` request stopped responding. No Vulkan session or
+  inference was reached. Stage 2 remains installed on PPSA99023; original eboot backup remains
+  unchanged in `build/audio-cpp-sa3-ps5-link-smoke/eboot-original.bin`. Wait for console recovery,
+  confirm `mounted:false`, then restore the original eboot before further runs.
+## 2026-10-12 — Stable Audio GGUF bounded reads
+
+- Reproduced the host PS5 adapter path with an explicit streaming-GGUF define. The GGUF source
+  now retains metadata and reads each tensor range with `fseeko`/bounded `fread` rather than
+  retaining a checkpoint-sized `mmap`; single tensor reads above 256 MiB fail before allocating.
+- Regression executable passed exact tensor bytes, release and reread, truncated-file rejection,
+  oversized sparse fixture rejection, and metadata-only load of the 1.68 GB Stable Audio model.
+  Process peak RSS was 116,208 KiB.
+- Rebuilt and signed PS5 stage-2 diagnostic eboot. Deployed to the unmounted PPSA99023 folder
+  title, chmod 755, downloaded it back and verified SHA-256 `2c910464fe9c43dc164b93ec6e90ee794705014b301e3fc81005e6583abc488a`.
+- Console control payload had to be reloaded after it was absent; afterwards it reported healthy.
+  PPSA99023 remains unmounted while the unrelated ProsperoEden PPSA99008 is active. No launch or
+  PS5 runtime verification was done in this run. Await approval before switching titles.
+
+## 2026-10-12 — Stable Audio 3 Vulkan inference verified on PS5
+
+- Raised the bounded per-tensor read limit from 256 MiB to 512 MiB after the stage-4 attempt
+  correctly rejected the largest tensor. The largest SA3 tensor is 393,216,000 bytes (375 MiB),
+  so 512 MiB provides bounded headroom; this limit is per tensor and is unrelated to the PS5's
+  available VRAM capacity. Host tests pass for exact reads, release/re-read, truncation, oversized
+  sparse tensors and SA3 metadata load; peak RSS stayed below 128 MiB.
+- Rebuilt, linked and signed the stage-4 PS5 harness, deployed it to the folder-backed test title
+  PPSA99023, and launched it. Klog confirmed `generating on Vulkan device 0`, then
+  `AUDIO_OK rate=44100 channels=2 frames=44100 peak=0.3198` and the ready marker indicating the
+  WAV was written and the runtime released. This verifies a non-silent one-second stereo 44.1 kHz
+  output generated by Stable Audio 3 on the console Vulkan path.
+- A subsequent `agent procs` check confirmed PPSA99023 was running (PID 99). After collecting the
+  result, stopped the test process cleanly and confirmed `mounted:false`. Restored the original
+  test eboot and downloaded it back; its SHA-256 matches the preserved local original
+  (`298326198b243711adae6476d7dbebb0c04e7d8e461cfb0639a18686b65a75cc`).
+
+## 2026-10-12 — SA3 HTTP-thread teardown fix and randomized modality cycles
+
+- The integrated SA3 request generated and sent a valid WAV, then the title received SIGSEGV as
+  its short-lived HTTP connection worker exited. Added temporary checkpoints around adapter
+  return, response serialization/send and worker teardown; the last completed checkpoint was
+  HTTP response sent. This isolated the failure to post-response thread teardown, not Vulkan
+  generation or WAV writing.
+- The pinned audio.cpp C API has a `thread_local std::string` error value; its model-spec package
+  cache also contains non-trivial TLS objects. The PS5 adaptation converts both groups to static
+  state. ProsperoAI serializes audio.cpp calls and model loads with its inference mutex. The patch
+  is reproducible in `tools/prepare-audio-cpp-sa3.py` and limited to the pinned dependency source.
+- With the TLS adaptation, two repeated SA3 requests plus text → SA3 → text passed; the title
+  remained alive. Then two full randomized cycles passed on PPSA99023, each with repeated requests
+  per media model and text round-trips:
+  1. Kokoro → text → SD → text → SA3 (19.15 s cold, 5.84 s warm) → text.
+  2. SA3 (19.15 s cold, 5.84 s warm) → text → SD → text → Kokoro → text.
+- SD generated valid 512×512 PNG/TGA, Kokoro generated valid mono 24 kHz PCM16 WAV, and SA3
+  generated valid non-silent stereo 44.1 kHz PCM16 WAV. The repeated outputs were deterministic.
+  JSON evidence: `vulkan-runtime-random-cycle-1.json`, `vulkan-runtime-random-cycle-2.json`, and
+  `vulkan-runtime-sa3.json` under `docs/performance/2026-10-12/`.
+- Console stayed responsive; no reboot was performed. Temporary diagnostic logging is being
+  removed from the final build. The test title PPSA99023 was the only title changed; PPSA99004
+  was not touched.
+
+## 2026-10-12 — PR #27 downloader and curated-model console follow-up
+
+- On PPSA99023, the same 4.03 GB Granite GGUF completed and passed downloader verification with
+  8 and 16 parallel HTTP range connections. Progress samples were about 28–30 MiB/s at 8 and
+  37–42 MiB/s at 16; a repeated 16-connection download confirmed the faster range. Four
+  connections were observed around 17–18 MiB/s in an earlier interval. These are console API
+  polling estimates, not controlled LAN throughput measurements.
+- A 32-connection build was launched and a Granite download requested. The app exited before a
+  reliable progress/resource sample; klog recorded `CRASH KILL_END` for PPSA99023. No exact cause
+  was established. The shsrv monitor on port 2323 refused connections, so CPU and peak RSS at 32
+  could not be measured. The final downloader is set to 16, the highest count with two complete,
+  SHA-verified model downloads.
+- Granite 4.0 H-Tiny loaded on Vulkan (weights 3,875 ms). Three identical 40-token warm answers
+  were correct; runtime elapsed times were 501,326 / 502,371 / 504,255 us (median 502,371 us,
+  about 79.6 generated tokens/s). Before switching to Granite, the console reported a 6,099 MiB
+  largest free block and 11,712 MiB Vulkan heap. Granite was removed after the test.
+- ACE-Step 1.5 passed its first real-model PS5 generation after the per-tensor read bound was
+  raised to 1 GiB. HTTP returned 200 in 118.282 s and the output is an 8-second, stereo 48 kHz
+  PCM16 WAV; its bytes and SHA-256 are stored in
+  `work/audio/ace-step-1.5-ps5-2026-10-12.wav`. Qwen 9B then switched back and answered “4” in
+  4.286 s. Machine-readable evidence: `performance/2026-10-12/pr27-console-followup.json`.
+- The final PPSA99023 app is running the 16-connection build with Qwen 9B selected. Granite was
+  deleted after benchmarking. ACE-Step remains installed as the curated preset. PPSA99004 was
+  not touched; the console was not rebooted.
+
+## 2026-10-12 — PR #27 workspace export and idle-release follow-up
+
+- Text export now writes a plain `.txt` artifact and session reference; the Workspace saves the
+  conversation before inference so new-session outputs have a valid reference. A console API
+  request returned the text through the HTTP media route as `text/plain`; deleting the temporary
+  test conversation removed its exported file.
+- Media archives keep their original PNG/WAV files and session references without writing
+  per-output JSON sidecars. Host session-store tests confirmed that two outputs at the same
+  message index get different filenames and both remain present. PS5 returned 200 with
+  `image/png` and `audio/wav` for existing archived outputs.
+- Setting idle unload to one minute released Qwen after 60 seconds in klog. A subsequent request
+  reloaded the model and returned HTTP 200 in about 4.1 seconds. The setting was restored to two
+  minutes.
+- Tests: `tests/test_session_store.py`, `tests/test_http_api.py`, `make format-check`, and
+  `git diff --check` passed. The final build was deployed to PPSA99023; Qwen remains selected.
+
+## 2026-10-13 — PR #27 storage comparison and SDXL memory check
+
+- Retried FTP to PPSA99023 successfully after stopping the external-storage benchmark build and
+  confirming the title was unmounted. Restored the internal-storage build and launched it; the
+  app remained alive during the following tests.
+- Qwen3.5 0.8B warm requests measured 0.117–0.121 s from both internal storage and
+  `/mnt/ext1/prosperoai`. Kokoro `af_heart` warm medians were 0.301 s internal and 0.303 s
+  external. Cold samples include app/model setup. No meaningful warm inference speedup was found
+  from external storage. Test assets remain in the requested external directory. Samples and WAVs:
+  `performance/2026-10-13/pr27-storage-comparison.json` and `../work/voice/`.
+- The corrected 6,938,078,334-byte SDXL checkpoint downloaded at about 33 MiB/s and passed bundle
+  verification. Generation failed on Vulkan workspace allocation: with a 11,712 MiB heap and
+  6,450.88 MiB tracked weights, the UNet needed 843.51 MiB device / 331.51 MiB budget and had no
+  available allocation. The retry failed while preparing `unet.input_blocks.1`. Do not report
+  SDXL as usable on this PS5 profile.
+- FLUX.2 Klein's Q4_K_M encoder likewise could not allocate about 5.94 GB with a 5,245 MiB largest
+  free block. A smaller encoder remains to be evaluated. Machine-readable results are in
+  `performance/2026-10-13/pr27-storage-comparison.json`.
+- PPSA99023 stayed running on the restored internal build. PPSA99004 was not touched and the
+  console was not rebooted.
+
+## 2026-10-13 — PR #27 12B MoE and allocator memory follow-up
+
+- Added the experimental BoHF 12B MoE 3A Q3_K_M preset from the author's GGUF repository,
+  pinned at `a0ab1f1455f4bad47f31c8c52f6aec1569699da5`. PPSA99023 downloaded 4,703,718,432 bytes
+  and passed the preset SHA-256 check. The standard `llama` architecture loaded and generated
+  `84 × 3 = 252`; a warm 48-token response took 724.202 ms of decode time, about 66.28 tokens/s.
+- During the run, klog recorded release of the idle SDXL context after 120 seconds. The next
+  model-change sample reported a 9,839 MiB largest free PS5 direct-memory block and Vulkan
+  reported 10,317,922,304 bytes free of a 12,280,922,112-byte heap (11,712 MiB total). The prior
+  FLUX failure reported 5,245 MiB largest direct-memory block while trying a 5,939.93 MiB CPU
+  buffer. These values show that the 5 GiB observation was state-dependent; they are not the same
+  metric as the full Vulkan heap. Releasing the idle SDXL context is a practical memory recovery
+  path. There is no allocator setting that can raise the OS/driver-reported Vulkan budget.
+- The title PPSA99023 remains running with BoHF selected. No reboot or change to PPSA99004.
+  Machine-readable evidence: `performance/2026-10-13/pr27-bohf-12b-moe.json`.
+
+## 2026-10-13 — PR #27 preset and KV-cache verification
+
+- PPSA99023 verified short text generation for Mistral 7B Instruct Q4_0, Qwen3.5 9B Q4_0,
+  MiniCPM5 2B Q8_0, Ternary Bonsai 2 27B PTQ1_0, Granite 4.0 H-Tiny Q4_K_M and BoHF 12B MoE
+  3A Q3_K_M. Granite downloaded 4,230,976,352 bytes, passed preset integrity verification, and
+  answered `84 multiplied by 3 equals 252`.
+- Existing console runs verified SD-Turbo, Stable Audio 3 Small SFX, ACE-Step 1.5 Turbo and
+  Kokoro. New retries still failed for FLUX.2 Klein (Qwen encoder could not allocate a 5,939.93
+  MiB CPU buffer) and SDXL (sampling needed 636.55 MiB of Vulkan device workspace and reported
+  zero available). Both remain unusable on this PS5 profile.
+- `inference/adapters/llama/vulkan.cpp` already uses llama.cpp KV memory for token-by-token
+  decoding and implements a longest-common-prefix reuse path for repeated prompts. Three
+  identical Qwen HTTP calls returned the expected answer but logged `reused=0` each time, so
+  cross-request reuse is not proven on the live console. The Hugging Face article's general
+  `use_cache=True` behavior is already provided by llama.cpp; improving prefix reuse needs a
+  separate investigation. No cache code was changed.
+- PPSA99023 remained running. PPSA99004 was not touched; no reboot.
+
+## 2026-10-13 — PR #29 PS5/PS5 Pro tuning profile A/B
+
+- Added explicit `ps5` and opt-in `ps5pro` app profiles plus guarded environment overrides in
+  the pinned ggml-vulkan source. The existing PS5 mat-vec tuning remains the default; the Pro
+  profile uses `GGML_VK_PS5_DMMV_WG=1`, subgroup 32, and batch/ubatch 512. A configurable
+  `vulkan_env.txt` applies individual experiment overrides after profile defaults.
+- Built and deployed the profile-enabled app only to the unmounted folder-backed test title
+  PPSA99023. With Mistral 7B Instruct v0.3 Q4_0, context 4096, batch/ubatch 512 and 256 output
+  tokens, five-run medians were 72.27 tok/s on `ps5`, 69.17 tok/s with the PR #29 Pro values,
+  then 72.31 tok/s after returning to `ps5`. The paired base profile readings are stable; the
+  Pro values are about 4.31% slower on this base PS5. These results do not measure a PS5 Pro.
+- PPSA99023 remains running with the `ps5` profile. PPSA99004 was not changed; no reboot.
+  Full reports: `performance/2026-10-13/pr29-ps5-base-profile.json`,
+  `pr29-ps5pro-profile-on-ps5.json`, `pr29-ps5-base-profile-after.json`, and
+  `pr29-ps5-profile-comparison.json`.
+
+
+## 2026-10-14 — PR27 recording, web fixes and allocation investigation
+
+Added DualSense/web voice recording, native glyph controls and confirmed L3 deletion for
+own/imported voices. User confirmed console capture works. Browser integration validates
+capture/save, Chatterbox voice changes and deferred model selection with one preparation
+on first typing. History tests confirm deleting the active chat opens a fresh chat.
+Host HTTP API tests: 22 pass; console tool tests: 5 pass. Native app builds and loader ELF
+validation pass. Deployed `pr27-web-lazy-load` to stopped/unmounted PPSA99023; process
+PID 161 and direct app API verified. Live voice setting changes and deferred selection
+pass; original voice restored. Main title unchanged, no agent-initiated reboot.
+
+S3/HiFT/T3 metadata arenas are bounded by pinned source preparation. Engine session reuse
+and replacing thread-local catalog storage eliminate observed allocation/teardown errors
+in latest runs. Speech quality still fails: Cemo 20 ms silence, custom 40 ms output.
+The custom reference is valid 5-second 16 kHz mono speech. Structural WAV success is not
+speech success; the custom report now explicitly records quality failure. T3 early EOS
+requires further diagnosis. Full model matrix remains unverified.
+
+
+### 2026-10-14 — backend memory indicator and T3 KV initialization
+
+Added actual backend load/release notifications and `/api/models/memory`. Web polls the
+state below PS5 status, native reads it in the persistent upper-right header, and the
+native workspace uses the loaded name instead of "Choose model". Live checks confirm
+prepare from web, switch/unload and deferred selection. HTTP API tests now 23 pass;
+router residency and browser integration pass. PPSA99023 runs `pr27-memory-zero-kv`,
+PID 173. Main title untouched.
+
+Official Chatterbox Python generation and T3 source were reviewed. Matching default
+sampling parameters did not provide a setting-only fix. T3 runner copied only the
+active KV prefix, leaving masked tail values uninitialized. Guarded preparation now
+zeros the full cache capacity on import. Cemo generates 15.34/12.66-second non-clipped
+WAVs; custom cold fails, repeat generates15.36 seconds. Speech intelligibility and EOS
+correctness remain unverified; long WAVs from a short fixture are suspicious. Short
+outputs under250 ms are rejected. Evidence is in the dated zero-kv reports/token trace.
+
+
+### 2026-10-14 — listener confirmation
+
+Saved Cemo tests to shared conversation `test-chatterbox-cemo-20261014-kv`; live browser
+verified two playable audio references. The user confirmed speech is unintelligible.
+Chatterbox remains a failed quality gate despite longer non-clipped WAVs. Explicit F32
+decode attention compiled as a diagnostic; console verification remains pending.
+
+### 2026-10-14 — Chatterbox T3 fixed on PS5 (explicit F32 decode attention)
+
+Host reference with the same pinned GGUF and prepared audio.cpp: "Hello from Prospero AI."
+gives 1.78 s on CPU and 1.74 s on host Vulkan (Intel HD 630). The console produced 12–15 s
+unintelligible audio with flash attention, so the fault was PS5-specific. The earlier
+`pr27-explicit-attention` run (all-NaN decode logits) used a stale eboot built before the
+final source preparation. ggml-vulkan environment switches (fusion, MMVQ/integer dot) did
+not change that build. `GGML_VULKAN_CHECK_RESULTS` crashed in `ggml_vk_compute_forward`
+(null subcontext) and, once guarded, was too slow to reach T3; it was reverted.
+
+A clean rebuild with explicit F32 QK^T/softmax/V attention (`pr27-t3-clean`) on PPSA99023:
+demo_1_man 2.14 s (EOS at step 54), Cemo 2.06 s (step 52), Cemo 19-word sentence 5.58 s
+(step 140); warm generation 1.4–3.1 s, no clipping. The user listened in conversation
+`test-chatterbox-fixed-20261014` and confirmed it works. Report:
+`performance/2026-10-14/pr27-chatterbox-t3-explicit-attention-clean.json`. A same-build A/B
+against flash attention was not repeated. Added `ps5ctl.py trace` for the app debug trace;
+`build-vulkan-native.sh` no longer needs `rg` and its symbol checks survive `pipefail`.
+Main title unchanged, no reboot.
+
+### 2026-10-14 — model switching: Granite, BoHF, Chatterbox and ACE-Step
+
+Correction to the entry above: the failing `pr27-explicit-attention` run was not a stale
+build. Chatterbox failed whenever llama.cpp had used the Vulkan device earlier in the process
+(fresh → Chatterbox passes; after MiniCPM/Mistral/BoHF it returns NaN decode logits). A T3
+node probe showed the prefix-cache K/V input to the first prefill CONCAT was entirely NaN:
+the decode runner imports an empty cache for the prefix pass and attention reads masked,
+never-written slots; reused PS5 direct memory is not zeroed, and 0 × NaN propagates.
+`RADV_DEBUG=zerovram` did not change it. Fix: clear both T3 runner buffers after allocation
+(`prepare-audio-cpp-sa3.py`). Flash attention is then correct too, but explicit F32 attention
+decodes a 19-word sentence in 3.15–3.5 s versus 4.4–5.2 s, so it stays.
+
+Granite 4.0 H was refused because `llama_model_n_head_kv()` reports layer 0, a recurrent
+layer with 0 KV heads, giving a 0 MiB KV estimate. Hybrid models now estimate with all
+attention heads. BoHF and Bonsai were refused after other models because the KV budget used
+`sceKernelAvailableDirectMemorySize`, the largest contiguous block: after the first load it
+stayed near 7 GB (later 5 GB, even 304 MiB) while about 11 GB was free in total. Vulkan
+buffers are at most 128 MiB (`suballocation_block_size`), so the adapter now budgets total
+free direct memory (`include/direct_memory.hpp`, `sceKernelDirectMemoryQuery`). A refused
+model is released immediately. Ten consecutive text switches across all six text models
+passed; the router log now reports largest block and total free memory.
+
+ACE-Step passed once per process, then failed allocating 76–133 MB with
+`ErrorOutOfDeviceMemory` (a 128 MiB direct allocation probe still succeeded afterwards) or
+crashed the title. `prepare()` loaded the planner LM, pre-DiT/text encoder, DiT and VAE
+together: ggml-vulkan peaked at 7.39 GiB. With `mem_saver`, stages now load on demand and
+the planner, pre-DiT and DiT are dropped after use (`adapt_ace_step_staged_memory`); the
+peak is 4.53 GiB. Two consecutive ACE-Step runs and ACE-Step after Bonsai 27B and Qwen 9B
+pass; a request takes about 132 s instead of 114 s. About 300 MB of direct memory per
+ACE-Step request is still not returned after release (not ggml buffers).
+
+First 3-round all-model benchmark before the Chatterbox/ACE fixes:
+`performance/2026-10-14/pr27-all-models-3x.json` (10 of 12 models 3/3). Native About card
+now credits BlackBearReloaded and Quatrixone. PPSA99023 only; main title unchanged; no reboot.
+
+### 2026-10-14 — all models, 3 rounds, and PS5 Pro memory bit on a base PS5
+
+`pr27-ace-staged` on PPSA99023: `tools/benchmark-all-models-ps5.py --rounds 3` passed 36/36
+requests, each one a model switch, title alive throughout. Medians (HTTP time includes
+loading): Mistral 7B 72.5 tok/s, Qwen3.8 9B 53.2, MiniCPM5 109.1, Bonsai 27B 13.2, Granite
+105.0, BoHF 68.9; SD-Turbo 30.6 s, Realistic Vision 36.0 s, Stable Audio 19.2 s, ACE-Step
+114.3 s, Kokoro 0.4 s, Chatterbox 14.4 s. Report:
+`performance/2026-10-14/pr27-all-models-3x-final.json`.
+
+ProsperoEden PR #139 sets `attribute3` bit 22 (PS5 Pro memory mode; +1,216 MiB direct memory
+measured on a PS5 Pro). On this base PS5 the test title launched with `attribute3`
+`0x500000` and still reported a 11,712 MiB pool, the same as with `0x100000`. The original
+`param.json` was restored. Not tested on a PS5 Pro with ProsperoAI.

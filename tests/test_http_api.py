@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class HttpApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.scratch = tempfile.TemporaryDirectory(prefix="prospero-http-")
+        (ROOT / "build/tests").mkdir(parents=True, exist_ok=True)
+        cls.scratch = tempfile.TemporaryDirectory(prefix="prospero-http-", dir=ROOT / "build/tests")
         tmp = Path(cls.scratch.name)
         cls.binary = tmp / "http-test"
         compiler = shutil.which("clang++") or shutil.which("g++")
@@ -24,6 +25,7 @@ class HttpApiTests(unittest.TestCase):
                         '-DPROSPERO_SETTINGS_PATH="'+str(tmp / "runtime.cfg")+'"', "-Wl,--gc-sections", "-I"+str(ROOT / "vulkan"), "-I"+str(ROOT / "include"),
                         "-I"+str(ROOT / ".deps/llama.cpp/vendor"),
                         str(ROOT / "tests/http_api_harness.cpp"), str(ROOT / "src/session_store.cpp"),
+                        "-DPROSPERO_HOST", str(ROOT / "src/voice_recorder.cpp"),
                         "-o", str(cls.binary)], check=True)
 
     @classmethod
@@ -46,22 +48,49 @@ class HttpApiTests(unittest.TestCase):
     def test_runtime_settings_round_trip(self):
         config = Path(self.scratch.name) / 'runtime.cfg'
         config.write_text('version=2\nstyle=2\ntokens=192\ntheme=1\n')
-        header, body = self.request('/api/settings/runtime', body={'context':'32k', 'kv':'auto', 'thinking':True})
+        header, body = self.request('/api/settings/runtime', body={'context':'32k', 'kv':'auto', 'thinking':True, 'idle_unload_minutes':2, 'kokoro_voice':'af_bella'})
         self.assertIn('200 OK', header)
-        expected = {'context':'32k', 'kv':'auto', 'thinking':True}
+        expected = json.loads(body)
+        self.assertEqual({k:expected[k] for k in ('context','kv','thinking','idle_unload_minutes','kokoro_voice')},
+                         {'context':'32k','kv':'auto','thinking':True,'idle_unload_minutes':2,'kokoro_voice':'af_bella'})
         self.assertEqual(json.loads(body), expected)
-        self.assertIn('style=2\ntokens=192\ntheme=1\n', config.read_text())
+        for line in ('style=2','tokens=192','theme=1'):
+            self.assertIn(line,config.read_text().splitlines())
         self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
-        header, body = self.request('/api/settings/runtime', body={'context':'256k', 'kv':'auto', 'thinking':True})
+        header, body = self.request('/api/settings/runtime', body={'context':'256k', 'kv':'auto', 'thinking':True, 'idle_unload_minutes':5})
         self.assertIn('200 OK', header)
-        expected = {'context':'256k', 'kv':'auto', 'thinking':True}
+        expected.update(context='256k',kv='auto',thinking=True,idle_unload_minutes=5,kokoro_voice='af_bella')
         self.assertEqual(json.loads(body), expected)
         self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
-        for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
+        for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'idle_unload_minutes':3}, {'kokoro_voice':'missing'}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
             self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
             self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
         self.assertIn('401 Unauthorized', self.request('/api/settings/runtime', key='secret')[0])
-        self.request('/api/settings/runtime', body={'context':'auto','kv':'auto','thinking':False})
+        self.request('/api/settings/runtime', body={'context':'auto','kv':'auto','thinking':False,'idle_unload_minutes':2})
+
+    def test_chatterbox_language_is_selectable_and_validated(self):
+        config = Path(self.scratch.name) / 'runtime.cfg'
+        config.write_text('version=2\n')
+        header, body = self.request('/api/settings/runtime')
+        self.assertIn('200 OK', header)
+        settings = json.loads(body)
+        self.assertEqual(settings['chatterbox_language'], 'en')
+        codes = [language['id'] for language in settings['chatterbox_languages']]
+        self.assertEqual(codes[0], 'en')
+        for code in ('de', 'ko', 'tr'):
+            self.assertIn(code, codes)
+        self.assertTrue(all(language['name'] for language in settings['chatterbox_languages']))
+        header, body = self.request('/api/settings/runtime', body={'chatterbox_language': 'de'})
+        self.assertIn('200 OK', header)
+        self.assertEqual(json.loads(body)['chatterbox_language'], 'de')
+        self.assertIn('chatterbox_language=3', config.read_text().splitlines())
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1])['chatterbox_language'], 'de')
+        # A code this build cannot encode must be refused, not silently taken as English.
+        for invalid in ({'chatterbox_language': 'zh'}, {'chatterbox_language': 'EN'},
+                        {'chatterbox_language': ''}, {'chatterbox_language': 3}):
+            self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
+            self.assertEqual(json.loads(self.request('/api/settings/runtime')[1])['chatterbox_language'], 'de')
+        self.request('/api/settings/runtime', body={'chatterbox_language': 'en'})
 
     def test_conversations_share_the_native_session_store(self):
         conversation = {'id':'web-sync-fixture','title':'Shared from web', 'model':'tiny.gguf',
@@ -81,9 +110,35 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn('404 Not Found', self.request('/api/conversations/' + conversation['id'])[0])
         self.assertIn('401 Unauthorized', self.request('/api/conversations', key='secret')[0])
 
+    def test_text_completion_archives_export_after_conversation_is_saved(self):
+        session_id = 'text-export-fixture'
+        conversation = {'id':session_id,'title':'Text export','model':'tiny.gguf',
+                        'modelName':'Tiny model','purpose':'text-to-text',
+                        'messages':[{'role':'user','content':'hello'}]}
+        header, _ = self.request('/api/conversations', body=conversation)
+        self.assertIn('201 Created', header)
+        try:
+            _, response = self.request(body={
+                'model':'tiny.gguf',
+                'messages':[{'role':'user','content':'hello'}],
+                'output_session_id':session_id,
+                'output_message_index':1,
+            })
+            self.assertEqual(json.loads(response)['choices'][0]['message']['content'], 'Hello café 😀')
+
+            root = Path('/tmp/prosperoai-session-test')
+            exports = list((root / 'work' / 'text' / session_id).glob('001-*.txt'))
+            self.assertEqual(len(exports), 1)
+            self.assertEqual(exports[0].read_text(encoding='utf-8'), 'Hello café 😀')
+            self.assertFalse(Path(str(exports[0]) + '.json').exists())
+            reference = root / 'sessions' / session_id / 'output-001.txt'
+            self.assertEqual(reference.read_text(encoding='utf-8').strip(), str(exports[0]))
+        finally:
+            self.request('/api/conversations/' + session_id, method='DELETE')
+
     def test_request_context_does_not_replace_shared_settings(self):
-        shared = {'context': '32k', 'kv': 'auto', 'thinking': True}
-        self.request('/api/settings/runtime', body=shared)
+        shared = {'context': '32k', 'kv': 'auto', 'thinking': True, 'idle_unload_minutes': 2, 'kokoro_voice': 'af_heart'}
+        shared = json.loads(self.request('/api/settings/runtime', body=shared)[1])
         try:
             for route, body in [
                 ('/v1/chat/completions', {'model': 'tiny.gguf', 'context_tokens': 16384,
@@ -103,11 +158,38 @@ class HttpApiTests(unittest.TestCase):
                                   'messages': [{'role': 'user', 'content': 'context-settings'}]})
             self.assertEqual(json.loads(wire)['choices'][0]['message']['content'], '32768:0')
         finally:
-            self.request('/api/settings/runtime', body={'context': 'auto', 'kv': 'auto', 'thinking': False})
+            self.request('/api/settings/runtime', body={'context': 'auto', 'kv': 'auto', 'thinking': False, 'idle_unload_minutes': 2})
+
+    def test_model_memory_status(self):
+        head, body = self.request("/api/models/memory")
+        self.assertIn("200 OK", head)
+        self.assertEqual(json.loads(body), {"loaded": False, "id": "", "name": ""})
+        self.assertIn("401 Unauthorized", self.request("/api/models/memory", key="secret")[0])
 
     def test_models_and_selection(self):
         _, body = self.request("/v1/models")
         self.assertEqual([m["id"] for m in json.loads(body)["data"]], ["tiny.gguf", "second.gguf"])
+        _, body = self.request("/api/models/selection")
+        self.assertEqual(json.loads(body)["id"], "tiny.gguf")
+        head, body = self.request("/api/models/selection", body={"id": "second.gguf"})
+        self.assertIn("200 OK", head)
+        self.assertEqual(json.loads(body)["id"], "second.gguf")
+        head, body = self.request("/api/models/selection", body={"id": "second.gguf", "prepare": False})
+        self.assertIn("200 OK", head)
+        self.assertTrue(json.loads(body)["preparation_deferred"])
+        self.assertIn("400 Bad Request", self.request("/api/models/selection", body={"id": "second.gguf", "prepare": "false"})[0])
+        self.assertIn("404 Not Found", self.request("/api/models/selection", body={"id": "missing.gguf"})[0])
+        self.assertIn("400 Bad Request", self.request("/api/models/selection", body={"id": 3})[0])
+        self.assertIn("401 Unauthorized", self.request("/api/models/selection", key="secret")[0])
+        header, body = self.request("/api/models", body={"id": "tiny.gguf"}, method="DELETE")
+        self.assertIn("409 Conflict", header)
+        self.assertIn("active", json.loads(body)["error"])
+        header, body = self.request("/api/models", body={"id": "second.gguf"}, method="DELETE")
+        self.assertIn("200 OK", header)
+        self.assertEqual(json.loads(body)["deleted"], "second.gguf")
+        self.assertIn("400 Bad Request", self.request("/api/models", body={"id": 3}, method="DELETE")[0])
+        self.assertIn("401 Unauthorized", self.request("/api/models", body={"id": "second.gguf"},
+                                                       method="DELETE", key="secret")[0])
         _, body = self.request(body={"model":"second.gguf", "messages":[{"role":"user","content":"x"}]})
         data = json.loads(body)
         self.assertEqual(data["model"], "second.gguf")
@@ -155,9 +237,25 @@ class HttpApiTests(unittest.TestCase):
             self.assertEqual(json.loads(response)["error"]["code"], "invalid_context_tokens")
         _, response = self.request(body={"model": "tiny.gguf",
                                        "messages": [{"role": "user", "content": "limits"}]})
-        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "131072:0")
+        self.assertEqual(json.loads(response)["choices"][0]["message"]["content"], "0:0")
         _, response = self.request("/api/generate", {"model": "tiny.gguf", "prompt": "limits"})
         self.assertEqual(json.loads(response)["response"], "131072:0")
+
+    def test_voice_recording_status_validation_and_authentication(self):
+        route='/api/voices/chatterbox/recording'
+        header,body=self.request(route)
+        self.assertIn('200 OK',header)
+        self.assertEqual(json.loads(body),{'state':'idle','seconds':0.0,'level':0,'preview':'','error':''})
+        self.assertIn('400 Bad Request',self.request(route,body={'action':'unknown'})[0])
+        self.assertIn('409 Conflict',self.request(route,body={'action':'save'})[0])
+        self.assertIn('401 Unauthorized',self.request(route,body={'action':'start'},key='secret')[0])
+
+    def test_ollama_benchmark_batch_overrides(self):
+        _, response = self.request('/api/generate', {
+            'model': 'tiny.gguf', 'prompt': 'benchmark-settings',
+            'options': {'num_batch': 512, 'num_ubatch': 128},
+        })
+        self.assertEqual(json.loads(response)['response'], '512:128')
 
     def test_public_ui_preserves_private_api(self):
         header, body = self.request("/", key="private")
@@ -169,7 +267,8 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("/v1/chat/completions", body)
         self.assertIn("/api/models/search", body)
         for route in ("/v1/models", "/api/tags", "/api/models/download",
-                      "/api/models/search", "/api/models/presets", "/../api_key.txt", "/fonts/../../api_key.txt"):
+                      "/api/models/search", "/api/models/presets", "/api/models",
+                      "/../api_key.txt", "/fonts/../../api_key.txt"):
             header, _ = self.request(route, key="private")
             self.assertIn("401 Unauthorized", header)
         header, _ = self.request("/../api_key.txt")

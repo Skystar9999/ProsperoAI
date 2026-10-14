@@ -1,6 +1,8 @@
 // ProsperoAI native application controller.
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "native_app.hpp"
+#include "chatterbox_languages.hpp"
+#include "generated_media.hpp"
 #include "runtime_settings.hpp"
 #include "generation_limits.hpp"
 
@@ -71,6 +73,12 @@ void validate(Preferences &p)
     if (!prospero_settings::valid_context(p.context_length))
         p.context_length = 0;
     p.kv_cache = 0; // Cache precision is always automatic.
+    if (!prospero_settings::valid_idle_unload_minutes(p.idle_unload_minutes))
+        p.idle_unload_minutes = 2;
+    p.kokoro_voice = std::min(p.kokoro_voice, 127U);
+    p.chatterbox_voice = std::min(p.chatterbox_voice, 127U);
+    if (!prospero_language::valid_chatterbox_language(p.chatterbox_language))
+        p.chatterbox_language = 0;
     if (!prospero_generation::valid_output_limit(p.output_limit))
         p.output_limit = 0;
     p.theme = std::min(p.theme, 1U);
@@ -122,6 +130,14 @@ void load_preferences(Preferences &p, const std::vector<Model> &models)
                 p.kv_cache = number;
             else if (std::strcmp(key, "thinking") == 0)
                 p.thinking = number != 0;
+            else if (std::strcmp(key, "idle_unload_minutes") == 0)
+                p.idle_unload_minutes = number;
+            else if (std::strcmp(key, "kokoro_voice") == 0)
+                p.kokoro_voice = number;
+            else if (std::strcmp(key, "chatterbox_voice") == 0)
+                p.chatterbox_voice = number;
+            else if (std::strcmp(key, "chatterbox_language") == 0)
+                p.chatterbox_language = number;
             else if (std::strcmp(key, "theme") == 0)
                 p.theme = number;
             else if (std::strcmp(key, "accent") == 0)
@@ -151,10 +167,12 @@ bool save_preferences(const Preferences &p)
     const int bytes = std::fprintf(
         file,
         "version=2\nmodel=%s\nstyle=%u\ntokens=%u\ntheme=%u\naccent=%u\nvolume=%"
-        "u\ntext_size=%u\nreduced_motion=%u\nhigh_contrast=%u\ncontext=%u\nkv=%u\nthinking=%u\n",
-        p.model_id.c_str(), p.style, p.output_limit, p.theme, p.accent, p.volume, p.text_size,
+        "u\ntext_size=%u\nreduced_motion=%u\nhigh_contrast=%u\ncontext=%u\nkv=%u\nthinking=%"
+        "u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\n",
+        p.model_id.c_str(), p.style, runtime.output_limit, p.theme, p.accent, p.volume, p.text_size,
         p.reduced_motion ? 1U : 0U, p.high_contrast ? 1U : 0U, runtime.context, runtime.kv,
-        runtime.thinking ? 1U : 0U);
+        runtime.thinking ? 1U : 0U, runtime.idle_unload_minutes, runtime.kokoro_voice,
+        runtime.chatterbox_voice, runtime.chatterbox_language);
     const int closed = std::fclose(file);
     if (bytes < 0 || closed != 0 || std::rename(temporary, PROSPERO_SETTINGS_PATH) != 0)
     {
@@ -198,11 +216,16 @@ int model_of(const State &state, prospero_session::Record *record)
 
 std::string media_path(const char *text, const char *suffix)
 {
-    const char *start = std::strstr(text, "/download0/");
-    const char *end = start ? std::strstr(start, suffix) : nullptr;
-    if (!end || (std::strchr(start, '\n') && std::strchr(start, '\n') < end))
-        return {};
-    return std::string(start, static_cast<std::size_t>(end - start) + std::strlen(suffix));
+    constexpr char prefix[] = "/download0/";
+    for (const char *start = text ? std::strstr(text, prefix) : nullptr; start;
+         start = std::strstr(start + sizeof(prefix) - 1, prefix))
+    {
+        const char *end = std::strstr(start, suffix);
+        const char *newline = std::strchr(start, '\n');
+        if (end && (!newline || newline > end))
+            return std::string(start, static_cast<std::size_t>(end - start) + std::strlen(suffix));
+    }
+    return {};
 }
 } // namespace
 
@@ -317,12 +340,7 @@ void App::poll()
         state_ = std::move(result_);
         if (state_.notice != Notice::None)
             notices_.push_back(state_.notice);
-        if (job_ == Job::Discover && !state_.models.empty())
-        {
-            const int saved = find_model(state_, state_.preferences.model_id.c_str());
-            select_model(saved < 0 ? 0U : static_cast<unsigned>(saved));
-        }
-        else if (job_ == Job::Select || job_ == Job::Open)
+        if (job_ == Job::Select || job_ == Job::Open)
             preferences_dirty_ = true;
     }
     if (!running_ && preferences_dirty_)
@@ -366,9 +384,8 @@ std::vector<Notice> App::take_notices()
 bool App::can_send() const
 {
     return !running_ && state_.ready && state_.selected_model >= 0 &&
-           (!state_.session.id[0] ||
-            state_.models[static_cast<std::size_t>(state_.selected_model)].id ==
-                state_.session.model_id);
+           state_.models[static_cast<std::size_t>(state_.selected_model)].id ==
+               state_.session.model_id;
 }
 
 bool App::select_model(unsigned index)
@@ -407,10 +424,8 @@ bool App::new_session()
     state_.stream.clear();
     state_.retry_available = false;
     state_.stats_valid = false;
-    state_.status = state_.ready ? "Ready when you are" : "Choose a model to begin";
+    state_.status = "Choose a model to begin";
     ++state_.revision;
-    if (!state_.ready && state_.selected_model >= 0)
-        return select_model(static_cast<unsigned>(state_.selected_model));
     return true;
 }
 
@@ -466,12 +481,16 @@ bool App::retry()
 void App::set_preferences(Preferences preferences)
 {
     validate(preferences);
-    if (!prospero_settings::set(
-            {preferences.context_length, preferences.kv_cache, preferences.thinking}))
+    if (!prospero_settings::set({preferences.context_length, preferences.output_limit,
+                                 preferences.kv_cache,
+                                 preferences.thinking, preferences.idle_unload_minutes,
+                                 preferences.kokoro_voice, preferences.chatterbox_voice,
+                                 preferences.chatterbox_language}))
     {
         state_.status = "Could not save runtime settings.";
         return;
     }
+    gpt_runtime_set_idle_unload_timeout(preferences.idle_unload_minutes * 60);
     preferences.model_id = state_.preferences.model_id;
     state_.preferences = std::move(preferences);
     preferences_dirty_ = true;
@@ -480,7 +499,21 @@ void App::set_preferences(Preferences preferences)
 
 bool App::play_audio()
 {
-    return !running_ && start(Job::Play);
+    if (running_)
+        return false;
+    audio_path_.clear();
+    return start(Job::Play);
+}
+
+bool App::play_audio(const std::string &path)
+{
+    if (running_ || !prospero_media::playable_audio_path(path))
+        return false;
+    audio_path_ = path;
+    if (start(Job::Play))
+        return true;
+    audio_path_.clear();
+    return false;
 }
 
 void *App::worker(void *context)
@@ -594,7 +627,7 @@ void App::work()
         refresh_sessions();
         result_.initialized = true;
         result_.status =
-            result_.models.empty() ? "No models are installed yet" : "Your library is ready";
+            result_.models.empty() ? "No models are installed yet" : "Choose a model to begin";
         break;
     }
     case Job::RefreshModels:
@@ -632,6 +665,12 @@ void App::work()
         if (result_.ready)
         {
             result_.session = {};
+            std::snprintf(
+                result_.session.model_id, sizeof(result_.session.model_id), "%s",
+                result_.models[static_cast<std::size_t>(result_.selected_model)].id.c_str());
+            std::snprintf(
+                result_.session.model_name, sizeof(result_.session.model_name), "%s",
+                result_.models[static_cast<std::size_t>(result_.selected_model)].name.c_str());
             result_.messages.clear();
             result_.images.clear();
             result_.retry_available = false;
@@ -715,16 +754,23 @@ void App::work()
     case Job::Play:
         result_.status = "No audio in this conversation";
 #ifdef PS5_MEDIA_AUDIO
-        for (auto it = result_.messages.rbegin(); it != result_.messages.rend(); ++it)
+        if (!audio_path_.empty())
         {
-            const auto path = media_path(it->content.c_str(), ".wav");
-            if (path.empty())
-                continue;
-            result_.status =
-                ps5_media_play_wav(path.c_str()) == 0 ? "Playing audio" : "Audio playback failed";
-            break;
+            result_.status = ps5_media_play_wav(audio_path_.c_str()) == 0 ? "Playing audio"
+                                                                          : "Audio playback failed";
         }
+        else
+            for (auto it = result_.messages.rbegin(); it != result_.messages.rend(); ++it)
+            {
+                const auto path = media_path(it->content.c_str(), ".wav");
+                if (path.empty())
+                    continue;
+                result_.status = ps5_media_play_wav(path.c_str()) == 0 ? "Playing audio"
+                                                                       : "Audio playback failed";
+                break;
+            }
 #endif
+        audio_path_.clear();
         break;
     case Job::SyncSessions:
     {
@@ -828,7 +874,7 @@ void App::generate()
         for (std::size_t i = result_.session.context_start; i < result_.messages.size(); ++i)
             context.push_back({result_.messages[i].role, result_.messages[i].content.c_str()});
         auto settings =
-            gpt_runtime_settings_t{result_.preferences.style, result_.preferences.output_limit};
+            gpt_runtime_settings_t{result_.preferences.style, runtime.output_limit};
         settings.context_length = runtime.context;
         settings.kv_cache = prospero_settings::kv_name(runtime.kv);
         settings.thinking = runtime.thinking;
@@ -855,7 +901,7 @@ void App::generate()
     metadata.model_name = model.name.c_str();
     metadata.prompt = result_.messages.back().content.c_str();
     metadata.response_style = result_.preferences.style;
-    metadata.output_limit = result_.preferences.output_limit;
+    metadata.output_limit = runtime.output_limit;
     metadata.requested_context = runtime.context;
     metadata.thinking = runtime.thinking;
     metadata.seed = model.capability == Capability::Image ? 42 : -1;
@@ -869,10 +915,17 @@ void App::generate()
     else
     {
         const bool image = model.capability == Capability::Image;
-        const auto source = image ? media_path(response.data(), ".tga")
-                                  : std::string("/download0/prosperoai-audio.wav");
+        const auto png_source = image ? media_path(response.data(), ".png") : std::string();
+        const auto source = media_path(response.data(), image ? ".tga" : ".wav");
+        const char *expected_root = image ? "/download0/ProsperoAI/work/image/"
+                                    : model.capability == Capability::Voice
+                                        ? "/download0/ProsperoAI/work/voice/"
+                                        : "/download0/ProsperoAI/work/audio/";
+        const bool source_allowed =
+            source.compare(0, std::strlen(expected_root), expected_root) == 0 &&
+            source.find("..") == std::string::npos;
         char path[320]{};
-        archived = !source.empty() &&
+        archived = source_allowed &&
                    prospero_session::archive_media(
                        result_.session.id, static_cast<unsigned>(result_.messages.size()),
                        image                                   ? "image"
@@ -880,8 +933,15 @@ void App::generate()
                                                                : "audio",
                        source.c_str(), path, sizeof(path), &metadata);
         if (archived)
-            std::snprintf(response.data(), response.size(), "%s generated locally.\n%s",
-                          image ? "Image" : "Audio", path);
+        {
+            if (image && !png_source.empty())
+                std::snprintf(response.data(), response.size(),
+                              "Image generated locally.\nPNG: %s\nPreview: %s", png_source.c_str(),
+                              path);
+            else
+                std::snprintf(response.data(), response.size(), "%s generated locally.\n%s",
+                              image ? "Image" : "Audio", path);
+        }
     }
     result_.messages.push_back(message("assistant", response.data()));
     refresh_images();

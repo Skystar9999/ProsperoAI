@@ -7,7 +7,7 @@ SHELL := /bin/bash
 
 -include .env
 
-APP_DEFINITIONS ?= PS5_MEDIA_AUDIO PS5_MEDIA_IMAGE PS5_SANDBOX_APP PS5_APP_HAS_DSO_HANDLE PS5_SD_GENERATE PS5_WRAP_MALLOC CL_TARGET_OPENCL_VERSION=120
+APP_DEFINITIONS ?= PS5_MEDIA_AUDIO PS5_MEDIA_IMAGE PS5_SANDBOX_APP PS5_APP_HAS_DSO_HANDLE PS5_SD_GENERATE PS5_WRAP_MALLOC
 APP_CXXFLAGS ?=
 APP_INCLUDE_PATHS ?= vendor/include src
 # Inference archives are selected by tools/build-vulkan-native.sh as one shared stack.
@@ -89,8 +89,7 @@ llama-vulkan: deps ## Host llama-cli with the Vulkan backend, plus a PS5 syntax 
 	@bash tools/build-llama-vulkan.sh
 
 .PHONY: llama-ps5 vulkan-smoke llama-vulkan-title app-vulkan app-vulkan-folder
-llama-ps5: deps ## Cross-build static llama.cpp and Vulkan libraries for PS5
-	@bash tools/build-llama-ps5.sh
+llama-ps5: vulkan-runtime-libs ## Compatibility alias; use the shared PS5 GGML/llama build
 
 vulkan-smoke: ## Build PS5 Vulkan startup/device-discovery test folder
 	@bash tools/build-vulkan-smoke.sh
@@ -205,9 +204,12 @@ app-vulkan-media-folder: vulkan-runtime
 sd-vulkan-check:
 	bash tools/build-sd-vulkan.sh
 
-.PHONY: vulkan-runtime-libs shared-vulkan app-vulkan-shared-folder
+.PHONY: vulkan-runtime-libs onnxruntime-ps5 shared-vulkan app-vulkan-shared-folder
 vulkan-runtime-libs: deps ## Build llama/SD against one ggml ABI and Vulkan backend (host-only cross build)
 	bash tools/build-vulkan-runtime.sh ps5
+
+onnxruntime-ps5: deps ## Build pinned ONNX Runtime CPU library for the PS5
+	bash tools/build-onnxruntime-ps5.sh
 
 app-vulkan-shared-folder: vulkan-runtime ## Compatibility alias
 

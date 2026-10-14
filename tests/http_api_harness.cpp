@@ -143,6 +143,9 @@ unsigned gpt_runtime_selected_model()
 void gpt_runtime_refresh_models()
 {
 }
+void gpt_runtime_set_idle_unload_timeout(unsigned)
+{
+}
 const char *gpt_runtime_model_id(unsigned i)
 {
     return i == 0 ? "tiny.gguf" : "second.gguf";
@@ -155,10 +158,18 @@ const char *gpt_runtime_model_purpose(unsigned)
 {
     return "text-to-text";
 }
+bool gpt_runtime_loaded_model(char *id, std::size_t ic, char *name, std::size_t nc) {
+    if(id && ic) id[0]=0; if(name && nc) name[0]=0; return false;
+}
 bool gpt_runtime_select_model(unsigned i)
 {
     current_model = i;
     return i < 2;
+}
+int gpt_runtime_prepare() { return 0; }
+bool gpt_runtime_delete_model(const char *id)
+{
+    return id && std::strcmp(id, "second.gguf") == 0 && current_model == 0;
 }
 int gpt_runtime_generate(const gpt_runtime_message_t *messages, unsigned count,
                          const gpt_runtime_settings_t &settings, char *out, std::size_t capacity,
@@ -183,6 +194,8 @@ int gpt_runtime_generate(const gpt_runtime_message_t *messages, unsigned count,
                                            std::to_string(settings.context_tokens)
         : last == "limits" ? std::to_string(settings.max_output_tokens) + ":" +
                                  std::to_string(settings.context_tokens)
+        : last == "benchmark-settings"
+            ? std::to_string(settings.batch_length) + ":" + std::to_string(settings.ubatch_length)
         : last == "long"           ? std::string(24000, 'x')
         : last == "selected-model" ? gpt_runtime_model_id(current_model)
         : last == "echo"           ? messages[0].content

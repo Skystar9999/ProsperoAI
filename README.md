@@ -30,11 +30,13 @@ how it is built, and what a run on a console showed.
 > on the PS5 GPU. It is not production software.
 
 > [!NOTE]
-> `vulkan-runtime` uses one pinned Prism ggml/Vulkan runtime for GGUF text,
-> SD-Turbo images, Stable Audio and Kokoro voice on RADV. The dedicated AGC inference
+> `vulkan-runtime` uses one upstream GGML v0.26.0/Vulkan runtime for llama.cpp text,
+> Stable Diffusion, audio.cpp and Kokoro adapters on RADV. The dedicated AGC inference
 > backend is removed. CPU operations still handle remaining media kernels; RADV
 > continues to use the platform GPU driver. See [current status](docs/VK_ACTIVE.md),
 > [media comparison](docs/MEDIA_VULKAN_COMPARISON.md) and [build instructions](docs/BUILDING.md).
+> Bonsai's Prism PTQ1_0/PQ2_0 types are applied to the pinned upstream runtime by
+> preparation scripts, so all curated models below share one GGML/Vulkan build.
 
 
 ## Highlights
@@ -48,7 +50,10 @@ how it is built, and what a run on a console showed.
 - Draws answers in Latin, Greek, Cyrillic, Chinese, Japanese and Korean with scalable faces.
 - Stores independent text, image, audio, and speech sessions under `/data/prosperoai/sessions`.
 - Supports DualSense navigation, right-stick conversation scrolling, the PS5 on-screen keyboard, and a physical USB keyboard.
-- Ships without weights. Models offers verified presets and standalone GGUF downloads.
+- Offers 19 Chatterbox speech languages, selectable alongside the voice in Workspace and web settings.
+- Ships without weights. Models offers verified presets and standalone GGUF downloads. See
+  [Supported models](docs/SUPPORTED_MODELS.md) for curated text models that run through the
+  shared GGUF runtime without model-specific adapters.
 - Includes an HTTP server with a browser Workspace, model downloads and progress at
   `http://<PS5-IP>:11434/`.
 - Connects OpenCode and other OpenAI-compatible clients to local PS5 text inference,
@@ -69,17 +74,42 @@ how it is built, and what a run on a console showed.
 
 ## Supported curated models
 
-| Model | Purpose | Installed size | Hardware result |
-| --- | --- | ---: | --- |
-| [Mistral 7B Instruct v0.3 Q4_0](https://huggingface.co/blackbearreloaded/ProsperoAI-Mistral-7B-Instruct-v0.3-Q4_0-PS5) | Text to text | 4.35 GiB | About 1.4–1.5 s load and 25–29 tokens/s for short, resident-context replies |
-| [Qwen3.5 9B Q4_0](https://huggingface.co/blackbearreloaded/ProsperoAI-Qwen3.5-9B-Q4_0-PS5) | Text to text | 6.37 GiB | 3.72 s switch/load; 1.46 s measured 44-token prefill and about 30 tokens/s decode |
-| [SD-Turbo FP16](https://huggingface.co/blackbearreloaded/ProsperoAI-SD-Turbo-FP16-PS5) | Text to image | 2.40 GiB | 512 × 512 image in about 76 seconds |
-| [Stable Audio Open Small FP16](https://huggingface.co/blackbearreloaded/ProsperoAI-Stable-Audio-Open-Small-FP16-PS5) | Text to audio | 1.32 GiB | 0.372-second stereo clip in about 62 seconds |
-| [Kokoro 82M FP16](https://huggingface.co/blackbearreloaded/ProsperoAI-Kokoro-82M-FP16-PS5) | Text to speech | 165 MiB | 1.975 seconds of 24 kHz speech in about 79 seconds |
+Every currently runnable model installed in `/data/prosperoai/models/` has a curated
+preset, including Mistral. The two Mistral storage entries (the flat GGUF and its old
+`.ps5lm` folder) are one model and use the same preset. The old
+`stable-audio-open-small` folder is a retained legacy asset from an earlier runtime; it
+has no adapter in the current Vulkan build and is not offered as a runnable preset.
 
-The linked repositories contain the exact directory layout, integrity hashes,
-upstream provenance, licenses, and preparation recipe for each model. Do not
-rename or mix their internal files.
+Every curated model was run three times on a base PS5, in rounds that visit all twelve
+models in turn, so every request is also a model switch — the same path the native and web
+interface use. Times are the HTTP request including model loading after the switch. Text
+models answered an arithmetic check correctly and then generated 128 tokens; image outputs
+were checked as 512 × 512 PNG, and audio and speech outputs for WAV structure, sample rate,
+channels, nonzero samples and clipping. All 36 requests passed and the app stayed running.
+
+| Curated preset | Purpose | PS5 runs 1 / 2 / 3 | Result |
+| --- | --- | ---: | --- |
+| [Mistral 7B Instruct v0.3 Q4_0](https://huggingface.co/QuantFactory/Mistral-7B-Instruct-v0.3-GGUF) | Text | 4.3 / 4.2 / 4.4 s | 3/3 correct, 72.5 tok/s |
+| [Qwen3.8 9B Distill Q4_K_M](https://huggingface.co/empero-ai/Qwen3.8-9B-Distill-GGUF) | Text | 7.2 / 7.3 / 7.2 s | 3/3 correct, 53.1 tok/s |
+| [MiniCPM5 2B Q8_0](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF) | Text | 3.3 / 3.3 / 3.3 s | 3/3 correct, 109.1 tok/s |
+| [Ternary Bonsai 2 27B PTQ1_0](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) | Text | 13.9 / 14.0 / 14.1 s | 3/3 correct, 13.2 tok/s |
+| [Granite 4.0 H-Tiny Q4_K_M](https://huggingface.co/ibm-granite/granite-4.0-h-tiny-GGUF) | Text | 5.2 / 5.2 / 5.4 s | 3/3 correct, 105.0 tok/s |
+| [BoHF 12B MoE 3A Q3_K_M](https://huggingface.co/theprint/Bohf-12B-MoE-3A-GGUF) | Text | 6.7 / 6.9 / 6.8 s | 3/3 correct, 68.9 tok/s |
+| [SD-Turbo FP16](https://huggingface.co/blackbearreloaded/ProsperoAI-SD-Turbo-FP16-PS5) | Image | 30.8 / 30.6 / 30.6 s | 3/3 valid 512 × 512 PNG |
+| [Realistic Vision v5.1 FP16](https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE) | Image | 35.9 / 36.1 / 36.0 s | 3/3 valid 512 × 512 PNG |
+| [Stable Audio 3 Small SFX Q8_0](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/Stable-Audio-3-Small-SFX-GGUF) | Audio | 19.2 / 19.2 / 19.3 s | 3/3 valid 4 s stereo WAV, 44.1 kHz |
+| [ACE-Step 1.5 Turbo Q8_0](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/ACE-Step1.5-GGUF/turbo) | Music | 114.4 / 114.3 / 114.3 s | 3/3 valid 8 s stereo WAV, 48 kHz |
+| [Kokoro 82M Vulkan](https://huggingface.co/blackbearreloaded/ProsperoAI-Kokoro-82M-FP16-PS5) | Speech | 4.0 / 0.4 / 0.4 s | 3/3 valid 3.9 s mono WAV, 24 kHz |
+| [Chatterbox 500M Q8_0](https://huggingface.co/audio-cpp/audio.cpp-gguf) | Speech, voice cloning | 14.3 / 14.4 / 14.4 s | 3/3 valid 4.2–4.5 s mono WAV, 24 kHz |
+
+Full JSON record: [all models, three rounds](docs/performance/2026-10-14/pr27-all-models-3x-final.json).
+Chatterbox speech was also checked by listening on the console.
+
+The linked repositories contain the exact file layout, integrity hashes, upstream provenance,
+licenses, and preparation recipe for each preset. The app releases its selected runtime after
+the configured idle timeout and prepares it again on demand. See [Vulkan tuning profiles](docs/PS5_VULKAN_PROFILES.md)
+to switch between `ps5` and the experimental `ps5pro` profile using
+`/data/prosperoai/vulkan_tuning_profile.txt`.
 
 ### Legacy AGC text model preparation
 
@@ -153,7 +183,7 @@ Everything the app keeps is under `/data/prosperoai/`:
 └── prosperoai/
     ├── models/
     │   ├── Mistral-7B-Instruct-v0.3.Q4_0.gguf
-    │   ├── kokoro-82m-fp16/
+    │   ├── kokoro-82m-vulkan/
     │   └── sd-turbo-fp16/
     ├── sessions/              conversations, generated images and audio
     ├── logs/                  the debug log, when it is switched on
@@ -403,9 +433,15 @@ see [Pull-request builds](docs/PULL_REQUEST_BUILDS.md).
 ## Project layout
 
 ```text
-src/                 ProsperoAI UI, sessions, model routing, and GPU runtimes
-vulkan/              Shared GGUF/media inference and RADV interface
-include/             Application interfaces
+src/                 ProsperoAI UI, sessions, app lifecycle, and platform integration
+include/             Stable application-facing interfaces and model catalog types
+inference/           Unified model router, typed adapter contract, and inference backends
+  router.cpp         Model discovery, one-model lifecycle, and API compatibility facade
+  adapters/          llama.cpp/Vulkan text, SD, Stable Audio, and Kokoro PS5 adapters
+  backends/vulkan/   Shared ggml/Vulkan media bridge
+vulkan/              HTTP/OpenAI API, storage, RADV/PS5 platform services, and Vulkan UI
+tools/vulkan-runtime/ CMake composition and host ABI tests for the shared ggml/Vulkan stack
+runtime/             Bundled PS5 libc runtime and integrity record (not inference code)
 assets/              The last-resort bitmap font (other fonts and sounds come from the kit)
 ui-kit/              Which sources of the fetched interface kit are compiled
 host/                Deterministic native-frontend capture harness
@@ -414,10 +450,19 @@ sce_sys/             PS5 title metadata, artwork, icon, and selection music
 models/README.txt    Model-free release placeholder and install guidance
 model-tools/         GGUF converter, validated recipes, and porting guide
 vendor/              Pinned headers and static runtime dependencies
-runtime/             Clean-room libc runtime inputs and integrity record
 tooling/native/      Native ELF/FSELF and runtime build tools
 tools/               Build, dependency, validation, packaging, and deploy scripts
 ```
+
+Stable Audio's OpenCL retirement, SA3 PS5 TLS teardown fix, and console evidence are tracked in
+[`docs/OPENCL_TO_VULKAN_RESEARCH.md`](docs/OPENCL_TO_VULKAN_RESEARCH.md).
+
+Generated files are saved by modality under `work/image/`, `work/audio/`, and `work/voice/`
+in ProsperoAI's persistent data folder; text responses are saved under `work/text/`. Each
+generated asset gets its own filename and is referenced from its conversation; media stays in
+PNG/WAV form and text exports are plain `.txt` files.
+
+For responsibilities and the adapter contract, see [Inference layers and adapters](docs/INFERENCE_ADAPTERS.md).
 
 ## Identity
 
@@ -425,7 +470,7 @@ tools/               Build, dependency, validation, packaging, and deploy script
 | --- | --- |
 | Shell title | `ProsperoAI` |
 | Title ID | `PPSA99004` |
-| Current app version | `01.004.000` |
+| Current app version | `01.005.000` |
 | Writable data | `/data/prosperoai` (the app's sandbox without storage access) |
 | Compute backend | `vulkan-runtime` on RADV, with documented CPU media operations |
 
