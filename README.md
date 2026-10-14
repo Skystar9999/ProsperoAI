@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/platform-PlayStation%205-003791?logo=playstation&amp;logoColor=white" alt="PlayStation 5">
   <img src="https://img.shields.io/badge/compute-vulkan--runtime-5BBEFF" alt="vulkan-runtime">
   <img src="https://img.shields.io/badge/models-text%20%7C%20image%20%7C%20audio%20%7C%20speech-5DDFA4" alt="Text, image, audio, and speech">
-  <img src="https://img.shields.io/badge/status-alpha-EF8354" alt="Alpha">
+  <img src="https://img.shields.io/badge/status-beta-4C9AFF" alt="Beta">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
 </p>
 
@@ -142,7 +142,7 @@ that the application does not support.
 
 ### Performance notes
 
-These are measured Alpha results from one PS5 on firmware 6.02, not guaranteed
+These are measured results from one PS5 on firmware 6.02, not guaranteed
 benchmarks. Text decode figures describe a loaded model with a short or reused
 context. The first prompt also pays model-loading and prefill cost. Attention
 work grows with conversation length, so long sessions respond more slowly.
