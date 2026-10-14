@@ -154,22 +154,45 @@ Stable Audio currently emits only its short deterministic validation clip, and
 Kokoro still uses a correctness-first CPU fallback for part of waveform
 generation. Both are functional demonstrations rather than real-time paths.
 
-## Install the app and models
+## Install ProsperoAI and curated models
+
+Your PS5 needs a compatible homebrew environment with ShadowMountPlus and a local ELF
+loader listening on TCP port 9021. ProsperoAI uses the loader at first launch to request
+storage access. It first checks for a running
+[PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) service; otherwise,
+it starts the one-request helper included in the app folder. You do not need to upload a
+separate Lapy payload.
+
+### Install from ProsperoStore
+
+If you have [ProsperoStore](https://github.com/blackbearreloaded/ProsperoStore) installed,
+search for **ProsperoAI** and choose **Install**. ProsperoStore downloads and installs the
+app folder and sets the permissions needed to launch it. The app itself does not include
+model weights; after launch, open **Models** and download the presets you want.
+
+### Install from a release ZIP
 
 1. Download `PPSA99004.zip` from the latest
-   [GitHub release](https://github.com/blackbearreloaded/ProsperoAI/releases).
-2. Extract it. The archive contains a complete `PPSA99004/` app folder and an
-   intentionally empty `PPSA99004/models/` directory.
-3. Upload the complete `PPSA99004` directory to `/data/homebrew/`.
-4. Keep the console's local ELF loader (TCP port 9021) available. At launch ProsperoAI
-   asks [PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) for
-   access to the console's storage: a Lapy service that is already running is asked
-   first, otherwise the app starts the one-request helper it ships with (`lapy.elf`).
-   No separate payload upload is required.
-5. Register or refresh the app folder in your homebrew loader, then launch ProsperoAI.
-6. Open **Models** and download a Text, Image, Audio or Voice preset. Alternatively,
-   copy standalone text GGUF files or complete curated model folders to
+   [GitHub release](https://github.com/blackbearreloaded/ProsperoAI/releases) and extract it.
+   The archive contains a complete `PPSA99004/` app folder and an intentionally empty
+   `PPSA99004/models/` directory.
+2. Upload the complete `PPSA99004/` folder to a directory ShadowMountPlus scans, such as
+   `/data/homebrew/`. The executable must end up at
+   `/data/homebrew/PPSA99004/eboot.bin` (not one folder deeper).
+3. If your FTP client does not preserve permissions, set the `PPSA99004/` folder and all
+   files and subfolders inside it to `0777` recursively. In WinSCP, use **File permissions**
+   and apply the change to files and subdirectories. In particular, `eboot.bin` and PRX
+   modules must be executable; missing permissions can prevent the title from launching.
+4. Wait for ShadowMountPlus to register the folder, or refresh/rescan its app list, then
+   launch **ProsperoAI** from the home screen.
+5. Open **Models** and download a Text, Image, Audio or Voice preset. Alternatively, copy
+   standalone text GGUF files or complete curated model folders to
    `/data/prosperoai/models/`.
+
+ProsperoStore handles the required permissions for its own installs and updates. For
+manual installs, the exact permission behavior depends on the FTP client; see the
+[ProsperoStore install notes](https://github.com/blackbearreloaded/ProsperoStore#install)
+if the console reports that it cannot start the app.
 
 The browser interface is at `http://<PS5-IP>:11434/`. Both interfaces show verified
 preset downloads and progress. Text and media inference use `vulkan-runtime`; text models use GGUF.
