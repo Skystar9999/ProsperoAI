@@ -48,6 +48,30 @@ commands.
   cancellation/disconnect behavior and broad model/template compatibility still
   need targeted verification.
 
+## Planned: evaluate 4get as an OpenCode search provider
+
+4get is a separate PHP proxy-search project, not a library to embed in the PS5
+app. Its [upstream README](https://git.lolcat.ca/lolcat/4get) describes a
+100–400 MB server footprint and its [license](https://git.lolcat.ca/lolcat/4get/src/branch/master/license.txt)
+is AGPLv3-only. Keep any first integration outside ProsperoAI on the
+development host, exposed to OpenCode as an optional MCP tool; do not run its
+server on the PS5. The project provides `GET /api/v1/web?s=<query>` with JSON
+results (`status`, `web[].title`, `web[].description`, and `web[].url`), and asks
+API clients to [cache results and only issue human-triggered searches](https://git.lolcat.ca/lolcat/4get/src/branch/master/api.txt).
+
+Initial manual smoke check: `4get.nadeko.net` returned useful JSON search
+results and source URLs. The official `4get.ca` endpoint and
+`search.fischbytes.de` returned HTTP 401; public instances may require a
+captcha-derived pass. A live OpenCode call through a temporary MCP adapter was
+started but stopped before a result, so OpenCode integration is unverified.
+
+Next steps: choose an instance or run 4get on the development host, implement a
+small optional MCP adapter with response caching and result limits, then run one
+human-requested OpenCode search and verify the exact titles and source URLs.
+Check the AGPLv3 obligations before distributing or bundling any 4get-derived
+code. Keep ProsperoAI's existing embedded LibreY route as the PS5-native search
+path.
+
 ## Verification sequence
 
 1. Done: on PPSA99023, confirm the title is running, check `/v1/models`, and
