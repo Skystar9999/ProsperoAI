@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "prosperoai/Mistral-7B-Instruct-v0.3.Q4_0.gguf",
+  "provider": {
+    "prosperoai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ProsperoAI on PS5",
+      "options": {
+        "baseURL": "http://<PS5-IP>:11434/v1",
+        "apiKey": "{env:PROSPEROAI_API_KEY}"
+      },
+      "models": {
+        "Mistral-7B-Instruct-v0.3.Q4_0.gguf": {
+          "name": "Mistral 7B Instruct v0.3 Q4_0",
+          "limit": {"context": 4096, "output": 2048},
+          "tool_call": true
+        }
+      }
+    }
+  },
+  "mcp": {
+    "prosperoai-search": {
+      "type": "local",
+      "command": ["python3", "/path/to/ProsperoAI/tools/prosperoai_search_mcp.py"],
+      "environment": {
+        "PROSPEROAI_BASE_URL": "http://<PS5-IP>:11434",
+        "PROSPEROAI_API_KEY": "{env:PROSPEROAI_API_KEY}"
+      },
+      "enabled": true
+    }
+  },
+  "permission": {
+    "*": "ask",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "ask",
+    "websearch": "ask",
+    "prosperoai-search_*": "ask"
+  }
+}

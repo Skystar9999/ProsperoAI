@@ -7,6 +7,173 @@ struct ApiError : std::runtime_error {
     const char *code;
     ApiError(const char *s, const char *c, const std::string &m) : std::runtime_error(m), status(s), code(c) {}
 };
+
+bool api_schema_keyword(const std::string &key) {
+    static const char *supported[] = {
+        "type", "properties", "required", "additionalProperties", "items", "enum", "const",
+        "anyOf", "oneOf", "allOf", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+        "minLength", "maxLength", "minItems", "maxItems", "description", "title", "default",
+        "examples", "$schema", "format", "deprecated", "readOnly", "writeOnly", "nullable"};
+    for (const auto *name : supported)
+        if (key == name) return true;
+    return false;
+}
+
+bool api_valid_schema(const ApiJson &schema, unsigned depth, std::string *reason) {
+    auto invalid = [&](const char *why) { if (reason) *reason = why; return false; };
+    if (depth > 32 || !schema.is_object()) return invalid("Tool parameter schema must be an object with at most 32 levels.");
+    for (auto it = schema.begin(); it != schema.end(); ++it)
+        if (!api_schema_keyword(it.key())) return invalid(("Unsupported JSON Schema keyword: " + it.key()).c_str());
+    if (schema.contains("type")) {
+        const auto &type = schema["type"];
+        auto valid_type = [](const ApiJson &v) {
+            if (!v.is_string()) return false;
+            const auto name = v.get<std::string>();
+            return name == "object" || name == "array" || name == "string" || name == "number" ||
+                   name == "integer" || name == "boolean" || name == "null";
+        };
+        if (type.is_string()) { if (!valid_type(type)) return invalid("Unsupported JSON Schema type."); }
+        else if (type.is_array() && !type.empty()) {
+            for (const auto &entry : type)
+                if (!valid_type(entry)) return invalid("JSON Schema type arrays must contain supported type names.");
+        } else return invalid("JSON Schema type must be a supported name or non-empty array of names.");
+    }
+    if (schema.contains("properties")) {
+        if (!schema["properties"].is_object()) return invalid("JSON Schema properties must be an object.");
+        for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it)
+            if (!api_valid_schema(it.value(), depth + 1, reason)) return false;
+    }
+    if (schema.contains("required")) {
+        if (!schema["required"].is_array()) return invalid("JSON Schema required must be an array of property names.");
+        std::vector<std::string> required_names;
+        for (const auto &entry : schema["required"]) {
+            if (!entry.is_string()) return invalid("JSON Schema required must contain only property names.");
+            const auto name = entry.get<std::string>();
+            if (std::find(required_names.begin(), required_names.end(), name) != required_names.end())
+                return invalid("JSON Schema required property names must be unique.");
+            required_names.push_back(name);
+            if (schema.contains("properties") && !schema["properties"].contains(name))
+                return invalid("JSON Schema required names must be declared in properties.");
+        }
+    }
+    if (schema.contains("additionalProperties") && !schema["additionalProperties"].is_boolean() &&
+        !api_valid_schema(schema["additionalProperties"], depth + 1, reason)) return false;
+    if (schema.contains("items") && !api_valid_schema(schema["items"], depth + 1, reason)) return false;
+    for (const auto *key : {"anyOf", "oneOf", "allOf"}) {
+        if (!schema.contains(key)) continue;
+        if (!schema[key].is_array() || schema[key].empty()) return invalid("JSON Schema alternatives must be non-empty arrays.");
+        for (const auto &entry : schema[key])
+            if (!api_valid_schema(entry, depth + 1, reason)) return false;
+    }
+    if (schema.contains("enum") && (!schema["enum"].is_array() || schema["enum"].empty()))
+        return invalid("JSON Schema enum must be a non-empty array.");
+    for (const auto *key : {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"})
+        if (schema.contains(key) && !schema[key].is_number()) return invalid("JSON Schema numeric bounds must be numbers.");
+    for (const auto *key : {"minLength", "maxLength", "minItems", "maxItems"})
+        if (schema.contains(key) && (!schema[key].is_number_integer() || schema[key].get<long long>() < 0))
+            return invalid("JSON Schema length and item bounds must be non-negative integers.");
+    for (const auto *key : {"nullable", "deprecated", "readOnly", "writeOnly"})
+        if (schema.contains(key) && !schema[key].is_boolean()) return invalid("JSON Schema flags must be boolean.");
+    return true;
+}
+
+bool api_matches_type(const ApiJson &value, const ApiJson &type) {
+    auto matches = [&](const ApiJson &entry) {
+        if (!entry.is_string()) return false;
+        const auto name = entry.get<std::string>();
+        return name == "object" ? value.is_object() : name == "array" ? value.is_array() :
+               name == "string" ? value.is_string() : name == "number" ? value.is_number() :
+               name == "integer" ? value.is_number_integer() : name == "boolean" ? value.is_boolean() :
+               name == "null" ? value.is_null() : false;
+    };
+    if (type.is_array()) {
+        for (const auto &entry : type) if (matches(entry)) return true;
+        return false;
+    }
+    return matches(type);
+}
+
+bool api_matches_schema(const ApiJson &value, const ApiJson &schema, unsigned depth = 0) {
+    if (depth > 32) return false;
+    if (schema.contains("type") && !api_matches_type(value, schema["type"]) &&
+        !(value.is_null() && schema.value("nullable", false))) return false;
+    if (schema.contains("const") && value != schema["const"]) return false;
+    if (schema.contains("enum")) {
+        bool found = false;
+        for (const auto &entry : schema["enum"]) found |= value == entry;
+        if (!found) return false;
+    }
+    if (schema.contains("allOf"))
+        for (const auto &entry : schema["allOf"])
+            if (!api_matches_schema(value, entry, depth + 1)) return false;
+    if (schema.contains("anyOf")) {
+        bool found = false;
+        for (const auto &entry : schema["anyOf"]) found |= api_matches_schema(value, entry, depth + 1);
+        if (!found) return false;
+    }
+    if (schema.contains("oneOf")) {
+        unsigned matches = 0;
+        for (const auto &entry : schema["oneOf"]) matches += api_matches_schema(value, entry, depth + 1) ? 1U : 0U;
+        if (matches != 1) return false;
+    }
+    if (value.is_object()) {
+        if (schema.contains("required"))
+            for (const auto &key : schema["required"])
+                if (!value.contains(key.get<std::string>())) return false;
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (schema.contains("properties") && schema["properties"].contains(it.key())) {
+                if (!api_matches_schema(it.value(), schema["properties"][it.key()], depth + 1)) return false;
+            } else if (schema.contains("additionalProperties")) {
+                const auto &extra = schema["additionalProperties"];
+                if (extra.is_boolean()) { if (!extra.get<bool>()) return false; }
+                else if (!api_matches_schema(it.value(), extra, depth + 1)) return false;
+            }
+        }
+    }
+    if (value.is_array()) {
+        if (schema.contains("minItems") && value.size() < schema["minItems"].get<std::size_t>()) return false;
+        if (schema.contains("maxItems") && value.size() > schema["maxItems"].get<std::size_t>()) return false;
+        if (schema.contains("items"))
+            for (const auto &entry : value)
+                if (!api_matches_schema(entry, schema["items"], depth + 1)) return false;
+    }
+    if (value.is_string()) {
+        const auto &text = value.get_ref<const std::string &>();
+        std::size_t characters = 0;
+        for (const unsigned char c : text) if ((c & 0xc0) != 0x80) ++characters;
+        if (schema.contains("minLength") && characters < schema["minLength"].get<std::size_t>()) return false;
+        if (schema.contains("maxLength") && characters > schema["maxLength"].get<std::size_t>()) return false;
+    }
+    if (value.is_number()) {
+        const double number = value.get<double>();
+        if (schema.contains("minimum") && number < schema["minimum"].get<double>()) return false;
+        if (schema.contains("maximum") && number > schema["maximum"].get<double>()) return false;
+        if (schema.contains("exclusiveMinimum") && number <= schema["exclusiveMinimum"].get<double>()) return false;
+        if (schema.contains("exclusiveMaximum") && number >= schema["exclusiveMaximum"].get<double>()) return false;
+    }
+    return true;
+}
+
+const ApiJson *api_find_tool(const ApiJson &tools, const std::string &name) {
+    for (const auto &tool : tools)
+        if (tool["function"]["name"] == name) return &tool["function"];
+    return nullptr;
+}
+
+bool api_valid_tool_name(const std::string &name) {
+    if (name.empty() || name.size() > 64) return false;
+    for (const unsigned char c : name)
+        if (!std::isalnum(c) && c != '_' && c != '-') return false;
+    return true;
+}
+
+std::string api_call_id(const ApiJson &call) {
+    if (!call.is_object() || !call.contains("id") || !call["id"].is_string()) return {};
+    const auto id = call["id"].get<std::string>();
+    if (id.empty() || id.size() > 128 || id.find_first_of("\r\n\t ") != std::string::npos) return {};
+    return id;
+}
+
 void openai_error(const NetApi &api, int sock, const char *status, const char *code, const char *message) {
     auto body = ApiJson{{"error", {{"message", message}, {"type", "invalid_request_error"},
                                   {"param", nullptr}, {"code", code}}}}.dump();
@@ -143,14 +310,39 @@ ApiChatRequest parse_api_chat(const ApiJson &body) {
         throw ApiError("400 Bad Request", "unsupported_stop", "Custom stop sequences are not supported.");
     if (body.contains("tools")) {
         if (!body["tools"].is_array()) throw ApiError("400 Bad Request", "invalid_tools", "tools must be an array.");
+        if (body["tools"].size() > 64) throw ApiError("400 Bad Request", "invalid_tools", "At most 64 tools may be declared.");
         result.tools = body["tools"];
         for (const auto &tool : result.tools) {
-            if (!tool.is_object() || tool.value("type", "") != "function" || !tool.contains("function") ||
-                !tool["function"].contains("name") || !tool["function"]["name"].is_string() ||
-                tool["function"]["name"].get<std::string>().empty())
+            if (!tool.is_object() || !tool.contains("type") || !tool["type"].is_string() ||
+                tool["type"] != "function" || !tool.contains("function") || !tool["function"].is_object() ||
+                !tool["function"].contains("name") || !tool["function"]["name"].is_string())
                 throw ApiError("400 Bad Request", "invalid_tools", "Expected named function tools.");
+            const auto &function = tool["function"];
+            const auto name = function["name"].get<std::string>();
+            if (!api_valid_tool_name(name))
+                throw ApiError("400 Bad Request", "invalid_tools", "Function names must contain 1–64 letters, numbers, underscores or hyphens.");
+            if (function.contains("description") && !function["description"].is_string())
+                throw ApiError("400 Bad Request", "invalid_tools", "Function description must be a string.");
+            if (function.contains("strict") && !function["strict"].is_boolean())
+                throw ApiError("400 Bad Request", "invalid_tools", "Function strict must be a boolean.");
+            for (const auto &previous : result.tools) {
+                if (&previous == &tool) break;
+                if (previous["function"]["name"] == name)
+                    throw ApiError("400 Bad Request", "invalid_tools", "Function names must be unique.");
+            }
+            if (!function.contains("parameters") || !function["parameters"].is_object())
+                throw ApiError("400 Bad Request", "invalid_tool_schema", "Function parameters must use a JSON Schema object.");
+            const auto &parameters = function["parameters"];
+            const bool object_root = !parameters.contains("type") ||
+                (parameters["type"].is_string() && parameters["type"] == "object") ||
+                (parameters["type"].is_array() && parameters["type"].contains("object"));
+            std::string schema_error;
+            if (!object_root || !api_valid_schema(parameters, 0, &schema_error))
+                throw ApiError("400 Bad Request", "invalid_tool_schema",
+                               schema_error.empty() ? "Function parameters must describe an object." : schema_error);
         }
     }
+    const ApiJson declared_tools = result.tools;
     const auto choice = body.value("tool_choice", ApiJson("auto"));
     if (choice.is_string()) {
         auto value = choice.get<std::string>();
@@ -185,24 +377,58 @@ ApiChatRequest parse_api_chat(const ApiJson &body) {
         if (!result.parallel_tools) instruction += " Call at most one tool.";
         result.roles.push_back("system"); result.contents.push_back(instruction);
     }
+    std::vector<std::string> outstanding_calls, seen_call_ids;
     for (const auto &message : messages) {
         const std::string role = message.at("role").get<std::string>();
         if (role != "system" && role != "developer" && role != "user" && role != "assistant" && role != "tool")
             throw ApiError("400 Bad Request", "invalid_role", "Unsupported message role.");
+        if (role != "tool" && !outstanding_calls.empty())
+            throw ApiError("400 Bad Request", "invalid_tool_result", "Tool results must follow their assistant tool calls before the next message.");
         std::string content = api_content(message);
         std::string mapped_role = role == "developer" ? "system" : role;
-        // Portable text fallback for models without native tool-aware templates.
+        // Validate OpenAI's assistant/tool message pairing before serializing it
+        // into the portable prompt used by models without native tool templates.
         if (role == "tool") {
+            if (!message.contains("tool_call_id") || !message["tool_call_id"].is_string())
+                throw ApiError("400 Bad Request", "invalid_tool_result", "Tool messages require a tool_call_id.");
+            const auto id = message["tool_call_id"].get<std::string>();
+            const auto found = std::find(outstanding_calls.begin(), outstanding_calls.end(), id);
+            if (found == outstanding_calls.end())
+                throw ApiError("400 Bad Request", "invalid_tool_result", "Tool result does not match an outstanding tool call.");
+            outstanding_calls.erase(found);
             mapped_role = "user";
-            content = "Tool result for " + message.at("tool_call_id").get<std::string>() + ":\n" + content;
+            content = "Tool result for " + id + ":\n" + content;
         }
         if (message.contains("tool_calls")) {
             if (role != "assistant" || !message["tool_calls"].is_array())
                 throw ApiError("400 Bad Request", "invalid_tool_calls", "Expected assistant tool_calls array.");
+            if (message["tool_calls"].empty() || message["tool_calls"].size() > 16)
+                throw ApiError("400 Bad Request", "invalid_tool_calls", "Assistant tool_calls must contain 1 to 16 calls.");
+            for (const auto &call : message["tool_calls"]) {
+                const auto id = api_call_id(call);
+                if (id.empty() || call.value("type", "") != "function" || !call.contains("function") ||
+                    !call["function"].is_object() || !call["function"].contains("name") ||
+                    !call["function"]["name"].is_string() || !call["function"].contains("arguments") ||
+                    !call["function"]["arguments"].is_string())
+                    throw ApiError("400 Bad Request", "invalid_tool_calls", "Malformed assistant function call.");
+                const auto name = call["function"]["name"].get<std::string>();
+                const auto *function = api_find_tool(declared_tools, name);
+                if (!function) throw ApiError("400 Bad Request", "invalid_tool_calls", "Assistant called an undeclared function.");
+                ApiJson arguments = ApiJson::parse(call["function"]["arguments"].get<std::string>(), nullptr, false);
+                if (arguments.is_discarded() || !arguments.is_object() ||
+                    !api_matches_schema(arguments, function->at("parameters")))
+                    throw ApiError("400 Bad Request", "invalid_tool_arguments", "Assistant tool arguments do not match the declared schema.");
+                if (std::find(seen_call_ids.begin(), seen_call_ids.end(), id) != seen_call_ids.end())
+                    throw ApiError("400 Bad Request", "invalid_tool_calls", "Tool call IDs must be unique.");
+                outstanding_calls.push_back(id);
+                seen_call_ids.push_back(id);
+            }
             content += "\nPrevious tool calls: " + message["tool_calls"].dump();
         }
         result.roles.push_back(mapped_role); result.contents.push_back(content);
     }
+    if (!outstanding_calls.empty())
+        throw ApiError("400 Bad Request", "invalid_tool_result", "Every assistant tool call must have a matching tool result.");
     // Merge adjacent system messages for Mistral and other strict templates.
     for (std::size_t i = 1; i < result.roles.size();) {
         if (result.roles[i] == "system" && result.roles[i-1] == "system") {
@@ -253,22 +479,30 @@ ApiJson api_assistant(const ApiChatRequest &request, const char *output, const s
     if (!request.structured) return message;
     const auto envelope = ApiJson::parse(output);
     if (!envelope.is_object()) throw ApiError("502 Bad Gateway", "invalid_tool_output", "Model returned an invalid tool envelope.");
-    if (envelope.contains("tool_calls") && !envelope["tool_calls"].empty()) {
-        if (!envelope["tool_calls"].is_array() || envelope["tool_calls"].size() > 16 || (!request.parallel_tools && envelope["tool_calls"].size() > 1))
+    const bool has_calls = envelope.contains("tool_calls");
+    const bool has_content = envelope.contains("content");
+    if (has_calls && has_content)
+        throw ApiError("502 Bad Gateway", "invalid_tool_output", "Tool envelope must contain either tool_calls or content.");
+    if (has_calls) {
+        if (!envelope["tool_calls"].is_array() || envelope["tool_calls"].empty() ||
+            envelope["tool_calls"].size() > 16 || (!request.parallel_tools && envelope["tool_calls"].size() > 1))
             throw ApiError("502 Bad Gateway", "invalid_tool_output", "Invalid tool call array.");
         ApiJson calls = ApiJson::array();
         for (const auto &call : envelope["tool_calls"]) {
-            const auto name = call.at("name").get<std::string>();
-            bool declared = false;
-            for (const auto &tool : request.tools) declared |= tool["function"]["name"] == name;
-            if (!declared || (!request.forced_tool.empty() && request.forced_tool != name) || !call.at("arguments").is_object())
+            if (!call.is_object() || !call.contains("name") || !call["name"].is_string() ||
+                !call.contains("arguments") || !call["arguments"].is_object())
+                throw ApiError("502 Bad Gateway", "invalid_tool_output", "Malformed function call envelope.");
+            const auto name = call["name"].get<std::string>();
+            const auto *function = api_find_tool(request.tools, name);
+            if (!function || (!request.forced_tool.empty() && request.forced_tool != name) ||
+                !api_matches_schema(call["arguments"], function->at("parameters")))
                 throw ApiError("502 Bad Gateway", "invalid_tool_output", "Model requested an undeclared tool or invalid arguments.");
             calls.push_back({{"id", "call_" + id + "_" + std::to_string(calls.size())}, {"type", "function"},
                 {"function", {{"name", name}, {"arguments", call["arguments"].dump()}}}});
         }
         message["content"] = nullptr; message["tool_calls"] = calls;
     } else {
-        if (request.required || !envelope.contains("content") || !envelope["content"].is_string())
+        if (request.required || !has_content || !envelope["content"].is_string())
             throw ApiError("502 Bad Gateway", "invalid_tool_output", "Model did not return the required tool call or text content.");
         message["content"] = envelope["content"];
     }
@@ -391,8 +625,10 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
             stream.begin();
             if (message.contains("tool_calls")) {
                 auto calls = message["tool_calls"];
-                for (std::size_t i = 0; i < calls.size(); ++i) calls[i]["index"] = i;
-                stream.chunk({{"tool_calls", calls}});
+                for (std::size_t i = 0; i < calls.size(); ++i) {
+                    calls[i]["index"] = i;
+                    stream.chunk({{"tool_calls", ApiJson::array({calls[i]})}});
+                }
             } else if (request.structured) stream.chunk({{"content", message["content"]}});
             else api_stream_progress(output.data());
             stream.chunk(ApiJson::object(), finish);

@@ -36,38 +36,18 @@ The benchmark report used 4096; its buffer figures do not describe larger contex
 
 ## Configure OpenCode
 
-Add this to `opencode.json` (adjust the address and model ID). No API key is needed
-by default, matching the server's unauthenticated default above:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "prosperoai": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "PS5 ProsperoAI",
-      "options": {
-        "baseURL": "http://<PS5-IP>:11434/v1"
-      },
-      "models": {
-        "Mistral-7B-Instruct-v0.3.Q4_0.gguf": {
-          "name": "Mistral PS5",
-          "limit": {"context": 16384, "output": 8192},
-          "tool_call": true
-        }
-      }
-    }
-  },
-  "model": "prosperoai/Mistral-7B-Instruct-v0.3.Q4_0.gguf"
-}
-```
-
-If you set up `api_key.txt` above, also set `PROSPEROAI_API_KEY` in your local
-environment to the same key and add `"apiKey": "{env:PROSPEROAI_API_KEY}"` under
-`options`.
+Start with the [copyable example profile](examples/opencode.prosperoai.json).
+Replace `<PS5-IP>` and `/path/to/ProsperoAI` with your console address and checkout
+path. The example reads `PROSPEROAI_API_KEY` from the environment; leave it unset
+when the console has no `api_key.txt`. Its permissions allow repository reading
+and ask before edits, shell commands, web access, or the ProsperoAI search tool.
+OpenCode supports more granular permission rules if you want to adjust that policy.
 
 This uses OpenCode's [custom OpenAI-compatible provider](https://opencode.ai/docs/providers/#custom-provider).
-A direct OpenCode 1.1.36 streaming connection returned `API_OK` on the PS5 test build. A PS5 function-call test called `lookup` with `{"query":"Vulkan"}`, accepted the tool result and produced a final answer.
+The checked-in profile uses Mistral 7B as a protocol example only; it has not
+qualified as a coding model. A direct OpenCode 1.1.36 streaming connection returned
+`API_OK` on the PS5 test build. A PS5 function-call test called `lookup` with
+`{"query":"Vulkan"}`, accepted the tool result and produced a final answer.
 
 ### Use LibreY search
 
@@ -116,13 +96,25 @@ The server maps this to OpenAI `tool_calls`, including call IDs, and maps tool-r
 messages back into the conversation. `tool_choice` supports `auto`, `none`,
 `required`, and a named function; `parallel_tool_calls: false` restricts output to
 one call. Tools execute in the client, not on the PS5. This is not llama-server's
-native per-model Jinja tool implementation. Parameter schemas guide the model;
-full JSON Schema argument validation is not implemented.
+native per-model Jinja tool implementation. Before a generated call is returned,
+the server validates its arguments against the declared schema. It also checks
+function declarations, call IDs, and tool-result pairing in request history. The
+validator implements common constraints for types, required fields, properties,
+additional properties, arrays, enums, constants, alternatives, string lengths,
+and numeric bounds. This is a supported subset, not full JSON Schema: unsupported
+keywords are rejected with HTTP 400, and generated arguments that fail validation
+return HTTP 502.
 
 Ordinary text streams as it is generated. Tool-enabled responses are buffered
 until the entire JSON envelope has been validated, then sent as SSE deltas.
 Invalid or incomplete tool output returns an error rather than executing a
-fabricated call. Model ability to choose useful tools still needs workload testing. In an OpenCode read test with automatic tool choice, Mistral 7B answered with invented file contents instead of calling the tool. A diagnostic proxy forcing `tool_choice=required` on the first OpenCode request did complete the `read` tool and returned the real `PROSPERO_TOOL_OK` file contents. That verifies the protocol roundtrip, not automatic tool selection. API compatibility does not establish coding-agent reliability for this model.
+fabricated call. Model ability to choose useful tools still needs workload testing.
+In an OpenCode read test with automatic tool choice, Mistral 7B answered with
+invented file contents instead of calling the tool. A diagnostic proxy forcing
+`tool_choice=required` on the first OpenCode request did complete the `read` tool
+and returned the real `PROSPERO_TOOL_OK` file contents. That verifies the protocol
+roundtrip, not automatic tool selection. API compatibility does not establish
+coding-agent reliability for this model.
 
 Requests accept up to 128 text messages and 256 KiB including headers. Content
 may be a string, null, or an array of text parts. Output is capped at 131072 tokens;

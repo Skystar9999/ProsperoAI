@@ -336,7 +336,9 @@ class HttpApiTests(unittest.TestCase):
 
     def tools_request(self, content="lookup", stream=False):
         return {"model":"tiny.gguf", "messages":[{"role":"user","content":content}], "stream":stream,
-                "tools":[{"type":"function", "function":{"name":"lookup", "parameters":{"type":"object"}}}]}
+                "tools":[{"type":"function", "function":{"name":"lookup", "parameters":{
+                    "type":"object", "properties":{"query":{"type":"string", "minLength":2}},
+                    "required":["query"], "additionalProperties":False}}}]}
 
     def test_tool_calls_and_roundtrip(self):
         _, wire = self.request(body=self.tools_request())
@@ -354,7 +356,49 @@ class HttpApiTests(unittest.TestCase):
         chunks = [json.loads(line[6:]) for line in wire.splitlines() if line.startswith("data: {")]
         calls = [c["choices"][0]["delta"]["tool_calls"] for c in chunks if "tool_calls" in c["choices"][0]["delta"]]
         self.assertEqual(calls[0][0]["index"], 0)
+        self.assertTrue(calls[0][0]["id"].startswith("call_"))
+        self.assertEqual(calls[0][0]["type"], "function")
+        self.assertEqual(calls[0][0]["function"]["name"], "lookup")
+        self.assertIn("query", json.loads(calls[0][0]["function"]["arguments"]))
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_tool_argument_schemas_and_parallel_calls(self):
+        for prompt in ("bad-extra-argument", "bad-missing-argument", "bad-argument-type"):
+            head, wire = self.request(body=self.tools_request(prompt))
+            self.assertIn("502 Bad Gateway", head, prompt)
+            self.assertEqual(json.loads(wire)["error"]["code"], "invalid_tool_output")
+
+        _, wire = self.request(body=self.tools_request("multiple-tools"))
+        self.assertEqual(len(json.loads(wire)["choices"][0]["message"]["tool_calls"]), 2)
+        request = self.tools_request("multiple-tools")
+        request["parallel_tool_calls"] = False
+        head, wire = self.request(body=request)
+        self.assertIn("502 Bad Gateway", head)
+
+    def test_tool_declarations_and_history_fail_closed(self):
+        for mutate in (
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":[5]}),
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":["missing"]}),
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":["query", "query"]}),
+            lambda body: body["tools"][0]["function"]["parameters"]["properties"]["query"].update({"pattern":"^x"}),
+            lambda body: body["tools"][0]["function"].update({"strict":"yes"}),
+            lambda body: body["tools"].append(body["tools"][0]),
+        ):
+            request = self.tools_request()
+            mutate(request)
+            head, _ = self.request(body=request)
+            self.assertIn("400 Bad Request", head)
+
+        request = self.tools_request()
+        request["messages"] = [{"role":"tool", "tool_call_id":"unmatched", "content":"x"}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
+        request["messages"] = [{"role":"assistant", "tool_calls":[{
+            "id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{}"}}]},
+            {"role":"tool", "tool_call_id":"wrong-id", "content":"x"}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
+        request["messages"] = [{"role":"assistant", "tool_calls":[{
+            "id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":json.dumps({"query":"valid"})}}]}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
 
     def test_invalid_requests_and_outputs(self):
         for body, status in [({}, "400"), ({"model":"missing", "messages":[{"role":"user","content":"x"}]}, "404"),
