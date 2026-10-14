@@ -21,6 +21,7 @@
 #include "voice_recorder.hpp"
 #include "session_store.hpp"
 #include "generation_limits.hpp"
+#include "librey_search.hpp"
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
 #include "model_downloader_ps5.hpp"
 #endif
@@ -995,6 +996,29 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if (it.key() == "web_search" && it.value().is_boolean())
+            {
+                p.web_search = it.value().get<bool>();
+                valid = true;
+            }
+            else if (it.key() == "librey_url" && it.value().is_string())
+            {
+                const auto url = it.value().get<std::string>();
+                if (url.empty() || prospero_settings::valid_librey_url(url))
+                {
+                    p.librey_url = url;
+                    valid = true;
+                }
+            }
+            else if (it.key() == "web_search_timeout" && it.value().is_number_integer())
+            {
+                const auto timeout = it.value().get<long long>();
+                if (timeout >= 0 && prospero_settings::valid_web_search_timeout(static_cast<unsigned>(timeout)))
+                {
+                    p.web_search_timeout_seconds = static_cast<unsigned>(timeout);
+                    valid = true;
+                }
+            }
             if (!valid)
             {
                 openai_error(api, sock, "400 Bad Request", "invalid_settings",
@@ -1017,6 +1041,9 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"kv", prospero_settings::kv_name(p.kv)},
                        {"thinking", p.thinking},
                        {"idle_unload_minutes", p.idle_unload_minutes},
+                       {"web_search", p.web_search},
+                       {"librey_url", p.librey_url},
+                       {"web_search_timeout", p.web_search_timeout_seconds},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
                        {"chatterbox_language", prospero_language::chatterbox_language(p.chatterbox_language).code},
@@ -1024,6 +1051,55 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"kokoro_voices", [&] { nlohmann::json a=nlohmann::json::array(); for (const auto &v : prospero_voice::runtime_voices(false)) a.push_back({{"id",v.id},{"name",v.name},{"locale",v.locale}}); return a; }()},
                        {"chatterbox_voices", [&] { nlohmann::json a=nlohmann::json::array(); for (const auto &v : prospero_voice::runtime_voices(true)) a.push_back({{"id",v.id},{"name",v.name},{"locale",v.locale}}); return a; }()}}
             .dump();
+    send_json(api, sock, response.c_str());
+}
+
+void handle_librey_search(const NetApi &api, int sock, const char *body)
+{
+    const auto request = nlohmann::json::parse(body ? body : "", nullptr, false);
+    if (!request.is_object() || !request.contains("query") || !request["query"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_search", "Expected a search query.");
+        return;
+    }
+    const auto settings = prospero_settings::get();
+    if (!settings.web_search || !prospero_settings::valid_librey_url(settings.librey_url))
+    {
+        openai_error(api, sock, "409 Conflict", "web_search_disabled",
+                     "Enable LibreY and configure its URL in Settings first.");
+        return;
+    }
+    unsigned maximum = 5;
+    if (request.contains("limit"))
+    {
+        if (!request["limit"].is_number_integer() || request["limit"].get<int>() < 3 ||
+            request["limit"].get<int>() > 5)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_search_limit",
+                         "Search result limit must be between 3 and 5.");
+            return;
+        }
+        maximum = request["limit"].get<unsigned>();
+    }
+    std::vector<prospero_librey::Result> results;
+    std::string error;
+    const auto query = request["query"].get<std::string>();
+    if (!prospero_librey::valid_query(query))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_search_query",
+                     "Search queries must be 2–256 characters without control characters.");
+        return;
+    }
+    if (!prospero_librey::search(settings.librey_url, query, settings.web_search_timeout_seconds,
+                                 maximum, &results, &error))
+    {
+        openai_error(api, sock, "502 Bad Gateway", "librey_search_failed", error.c_str());
+        return;
+    }
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto &item : results)
+        data.push_back({{"title", item.title}, {"url", item.url}, {"snippet", item.snippet}});
+    const auto response = nlohmann::json{{"query", query}, {"data", data}}.dump();
     send_json(api, sock, response.c_str());
 }
 
@@ -1227,7 +1303,8 @@ bool media_path_allowed(const std::string &path)
     if (path.find("..") != std::string::npos)
         return false;
     static const char *prefixes[] = {
-        "/download0/ProsperoAI/sessions/", "/download0/ProsperoAI/work/text/",
+        "/download0/ProsperoAI/work/sessions/", "/download0/ProsperoAI/sessions/",
+        "/download0/ProsperoAI/work/text/",
         "/download0/ProsperoAI/work/image/", "/download0/ProsperoAI/work/audio/",
         "/download0/ProsperoAI/work/voice/"};
     for (const char *prefix : prefixes)
@@ -1518,6 +1595,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_runtime_settings(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/settings/runtime") == 0)
         handle_runtime_settings(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/search") == 0)
+        handle_librey_search(api, sock, body);
     else if (std::strcmp(path, "/api/voices/chatterbox/custom") == 0 &&
              (std::strcmp(method, "GET") == 0 || std::strcmp(method, "POST") == 0))
         handle_chatterbox_custom_voice(api, sock, method, body, request_body_size);

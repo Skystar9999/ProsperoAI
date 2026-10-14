@@ -1548,6 +1548,10 @@ void NativeUI::Impl::build_generation_form()
         {"1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes", "60 minutes"},
         selected_idle);
     form_.add_value(9, "Processing", "On this console");
+    form_.add_choice(22, "Web search", {"Off", "LibreY"}, runtime.web_search ? 1 : 0);
+    form_.add_value(23, "LibreY server", runtime.librey_url.empty()
+                                              ? "Set the HTTPS address in the web UI Settings."
+                                              : runtime.librey_url);
     form_.enter();
 }
 
@@ -1604,6 +1608,14 @@ void NativeUI::Impl::apply_generation_form()
     constexpr unsigned idle_minutes[] = {1, 2, 5, 10, 30, 60};
     p.idle_unload_minutes = idle_minutes[std::clamp(form_.choice_index(20), 0, 5)];
     app_.set_preferences(std::move(p));
+    auto runtime = prospero_settings::get();
+    runtime.web_search = form_.choice_index(22) == 1;
+    if (!prospero_settings::set(runtime))
+    {
+        toasts_.push(ui::StatusKind::warning, "Web search not saved",
+                     "Set a valid LibreY HTTPS address in the web UI Settings first.");
+        build_generation_form();
+    }
 }
 
 void NativeUI::Impl::sync()

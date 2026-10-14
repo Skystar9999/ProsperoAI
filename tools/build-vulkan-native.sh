@@ -40,7 +40,7 @@ source "$root/tools/ninja-build.sh"
 ninja_begin "$work/app.ninja"
 objects=()
 sources=(src/kv_budget.cpp src/prefix_reuse.cpp src/main.cpp src/native_app.cpp src/native_ui.cpp src/native_ui_screens.cpp src/native_ui_style.cpp third_party/qrcodegen/qrcodegen.cpp
- src/font_set.cpp src/media_preview.cpp src/dev_script.cpp src/gpt_input.cpp src/gpt_ime.cpp
+ src/font_set.cpp src/media_preview.cpp src/librey_search.cpp src/dev_script.cpp src/gpt_input.cpp src/gpt_ime.cpp
  src/media_output_ps5.cpp src/voice_recorder.cpp src/session_store.cpp src/runtime_support.cpp
  src/agc_lifecycle.cpp inference/router.cpp inference/adapters/registry.cpp
  inference/adapters/media/stable_diffusion_ps5.cpp inference/adapters/media/stable_audio_ps5.cpp

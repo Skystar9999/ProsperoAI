@@ -4,6 +4,7 @@
 #include "chatterbox_languages.hpp"
 #include "generated_media.hpp"
 #include "runtime_settings.hpp"
+#include "librey_search.hpp"
 #include "generation_limits.hpp"
 
 #include "debug_log.hpp"
@@ -481,10 +482,16 @@ bool App::retry()
 void App::set_preferences(Preferences preferences)
 {
     validate(preferences);
-    if (!prospero_settings::set({preferences.context_length, preferences.output_limit,
-                                 preferences.kv_cache, preferences.thinking,
-                                 preferences.idle_unload_minutes, preferences.kokoro_voice,
-                                 preferences.chatterbox_voice, preferences.chatterbox_language}))
+    auto runtime = prospero_settings::get();
+    runtime.context = preferences.context_length;
+    runtime.output_limit = preferences.output_limit;
+    runtime.kv = preferences.kv_cache;
+    runtime.thinking = preferences.thinking;
+    runtime.idle_unload_minutes = preferences.idle_unload_minutes;
+    runtime.kokoro_voice = preferences.kokoro_voice;
+    runtime.chatterbox_voice = preferences.chatterbox_voice;
+    runtime.chatterbox_language = preferences.chatterbox_language;
+    if (!prospero_settings::set(runtime))
     {
         state_.status = "Could not save runtime settings.";
         return;
@@ -867,11 +874,48 @@ void App::generate()
     result_.unsaved = false;
     int status = 1;
     const auto runtime = prospero_settings::get();
+    const std::string &latest = result_.messages.back().content;
+    const bool search_intent = latest.rfind("/search ", 0) == 0;
+    const std::string search_query = search_intent ? latest.substr(8) : std::string();
+    std::vector<prospero_librey::Result> search_results;
+    std::string search_error;
+    if (search_intent)
+    {
+        if (!runtime.web_search || !prospero_settings::valid_librey_url(runtime.librey_url))
+        {
+            result_.notice = Notice::GenerationFailed;
+            result_.status = "Enable LibreY and set its HTTPS address in Settings before using /search.";
+            refresh_sessions();
+            return;
+        }
+        if (!prospero_librey::search(runtime.librey_url, search_query,
+                                     runtime.web_search_timeout_seconds, 5,
+                                     &search_results, &search_error))
+            search_error = "Web search failed: " + search_error +
+                           ". Do not imply that current web results were retrieved.";
+    }
     do
     {
         std::vector<gpt_runtime_message_t> context{{"system", kPrompts[result_.preferences.style]}};
+        std::string search_context;
+        if (search_intent)
+        {
+            if (search_results.empty())
+                search_context = "The user requested a web search, but no results were retrieved. " +
+                                 search_error + " Be clear about this limitation.";
+            else
+                search_context = prospero_librey::prompt_context(search_query, search_results);
+        }
         for (std::size_t i = result_.session.context_start; i < result_.messages.size(); ++i)
-            context.push_back({result_.messages[i].role, result_.messages[i].content.c_str()});
+        {
+            if (search_intent && i + 1 == result_.messages.size())
+            {
+                context.push_back({"system", search_context.c_str()});
+                context.push_back({"user", search_query.c_str()});
+            }
+            else
+                context.push_back({result_.messages[i].role, result_.messages[i].content.c_str()});
+        }
         auto settings = gpt_runtime_settings_t{result_.preferences.style, runtime.output_limit};
         settings.context_length = runtime.context;
         settings.kv_cache = prospero_settings::kv_name(runtime.kv);

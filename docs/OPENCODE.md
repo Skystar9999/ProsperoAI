@@ -1,5 +1,9 @@
 # Use the PS5 Vulkan model in OpenCode
 
+For the planned coding-agent workflow and shared PS5/web UI search through
+LibreY, with an optional OpenCode websearch route, see the
+[coding-agent integration plan](OPENCODE_CODING_AGENT_PLAN.md).
+
 The Vulkan build exposes `GET /v1/models` and `POST /v1/chat/completions` at
 `http://<PS5-IP>:11434/v1`. It supports non-streaming completions and SSE chat
 chunks, finish reasons, usage, and `[DONE]`. The existing console layout is unchanged.
@@ -64,6 +68,45 @@ environment to the same key and add `"apiKey": "{env:PROSPEROAI_API_KEY}"` under
 
 This uses OpenCode's [custom OpenAI-compatible provider](https://opencode.ai/docs/providers/#custom-provider).
 A direct OpenCode 1.1.36 streaming connection returned `API_OK` on the PS5 test build. A PS5 function-call test called `lookup` with `{"query":"Vulkan"}`, accepted the tool result and produced a final answer.
+
+### Use LibreY search
+
+In the web UI Settings, set the HTTPS address of your LibreY instance, enable
+LibreY, and use **Test LibreY**. The PS5 app can then search from its built-in
+conversation with `/search your query`; the same command works in the web UI.
+The app sends the search from the console and passes up to five titles, snippets
+and source URLs to the model. Search results are treated as untrusted input.
+LibreY runs as a separate self-hosted service and is not bundled into the PS5 app.
+The client caps each response at 128 KiB; its shared HTTPS transport reserves a
+4 MiB receive buffer only during a request and frees it when the request closes.
+
+OpenCode can call the same PS5 search endpoint through the included MCP bridge.
+Configure the bridge in `opencode.json` and set the console origin in the local
+environment:
+
+```json
+{
+  "mcp": {
+    "prosperoai-search": {
+      "type": "local",
+      "command": ["python3", "<PATH-TO-PROSPEROAI>/tools/prosperoai_search_mcp.py"],
+      "environment": {
+        "PROSPEROAI_BASE_URL": "http://<PS5-IP>:11434",
+        "PROSPEROAI_API_KEY": "<OPTIONAL-API-KEY>"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+Use the MCP `web_search` tool when you want OpenCode to search through the
+LibreY instance configured in ProsperoAI. OpenCode also has its own optional
+`websearch`/`webfetch` tools. Their provider selection lives in OpenCode; those
+hosted search providers are separate from the open-source LibreY route. Disable
+OpenCode's built-in `websearch` if you want only the LibreY MCP tool. OpenCode
+documents the built-in provider selection and permission settings in its
+[websearch guide](https://opencode.ai/docs/websearch/).
 
 ## Tool calls and limits
 
