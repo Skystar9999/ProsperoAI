@@ -1556,11 +1556,27 @@ void NativeUI::Impl::build_generation_form()
         int selected_duration = 0;
         for (int i = 0; i < 7; ++i)
             if (durations[i] == runtime.audio_duration_sec)
-                selected_duration = i;
+                selected_duration = i + 1;
+        form_.add_value(29, "Current audio duration",
+                        runtime.audio_duration_sec == 0
+                            ? "Model default"
+                            : std::to_string(runtime.audio_duration_sec) + " seconds");
         form_.add_choice(24, "Audio clip duration",
-                         {"Model default", "8 seconds", "16 seconds", "30 seconds",
-                          "60 seconds", "120 seconds", "300 seconds"},
+                         {"Keep current", "Model default", "8 seconds", "16 seconds",
+                          "30 seconds", "60 seconds", "120 seconds", "300 seconds"},
                          selected_duration);
+        form_.add_value(27, "Current audio seed", std::to_string(runtime.audio_seed));
+        form_.add_choice(28, "Audio seed",
+                         {"Keep current", "42", "123", "1234", "2026", "0"}, 0);
+    }
+    const bool image_model = state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Image;
+    if (image_model)
+    {
+        form_.add_value(25, "Current image seed",
+                       runtime.sd_seed == 0 ? "Random" : std::to_string(runtime.sd_seed));
+        form_.add_choice(26, "Image seed",
+                         {"Keep current", "42", "123", "1234", "2026", "Random"}, 0);
     }
     form_.add_value(9, "Processing", "On this console");
     form_.enter();
@@ -1623,16 +1639,34 @@ void NativeUI::Impl::apply_generation_form()
     const auto &state = app_.state();
     const bool audio_model = state.selected_model >= 0 &&
         state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Audio;
+    const bool image_model = state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Image;
+    bool runtime_changed = false;
     if (audio_model)
     {
-        constexpr unsigned durations[] = {0, 8, 16, 30, 60, 120, 300};
-        runtime.audio_duration_sec = durations[std::clamp(form_.choice_index(24), 0, 6)];
-        if (!prospero_settings::set(runtime))
-        {
-            toasts_.push(ui::StatusKind::warning, "Generation settings not saved",
-                         "Could not save the audio duration setting.");
-            build_generation_form();
-        }
+        constexpr unsigned durations[] = {0, 0, 8, 16, 30, 60, 120, 300};
+        const int selected_duration = std::clamp(form_.choice_index(24), 0, 7);
+        if (selected_duration != 0)
+            runtime.audio_duration_sec = durations[selected_duration];
+        constexpr unsigned seeds[] = {0, 42, 123, 1234, 2026, 0};
+        const int selected_seed = std::clamp(form_.choice_index(28), 0, 5);
+        if (selected_seed != 0)
+            runtime.audio_seed = seeds[selected_seed];
+        runtime_changed = runtime_changed || selected_duration != 0 || selected_seed != 0;
+    }
+    if (image_model)
+    {
+        constexpr unsigned seeds[] = {0, 42, 123, 1234, 2026, 0};
+        const int selected_seed = std::clamp(form_.choice_index(26), 0, 5);
+        if (selected_seed != 0)
+            runtime.sd_seed = seeds[selected_seed];
+        runtime_changed = runtime_changed || selected_seed != 0;
+    }
+    if (runtime_changed && !prospero_settings::set(runtime))
+    {
+        toasts_.push(ui::StatusKind::warning, "Generation settings not saved",
+                     "Could not save media generation settings.");
+        build_generation_form();
     }
 }
 

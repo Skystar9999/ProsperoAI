@@ -1,4 +1,5 @@
 #include "runtime_residency.hpp"
+#include "runtime_settings.hpp"
 #include "ggml-vulkan.h"
 static_assert(GGML_MAX_NAME == 160, "SD and llama must share the tensor ABI");
 #include "stable-diffusion.h"
@@ -321,7 +322,8 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
     parameters.negative_prompt = "";
     parameters.width = (sd3 || flux2_klein) ? 768 : 512;
     parameters.height = parameters.width;
-    parameters.seed = 42;
+    const unsigned configured_seed = prospero_settings::get().sd_seed;
+    parameters.seed = configured_seed == 0 ? -1 : static_cast<std::int64_t>(configured_seed);
     parameters.batch_count = 1;
     parameters.sample_params.sample_steps = flux2_klein ? 4
                                             : sdxl ? 10

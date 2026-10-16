@@ -24,11 +24,16 @@ The table is the complete list of curated presets in this build. Curated media p
 their required model files and use the image, audio, or speech runtime already in the app.
 
 Music and sound generation uses a default clip length (8 s for ACE-Step, 4 s for Stable Audio 3).
-For supported audio generation models, choose a duration in the native Generation menu or the
-web workspace's Generation settings. The UI offers model default, 8, 16, 30, 60, 120 and 300
-seconds. The `audio_duration_sec` runtime setting also accepts 1-300 through
-`POST /api/settings/runtime` or the settings file (`0` restores per-model defaults); audio.cpp's
-planner may clamp a request the loaded model cannot serve.
+For supported audio generation models, choose a duration and seed in the native Generation menu
+or the web workspace's Generation settings. The UI offers model default, 8, 16, 30, 60, 120 and
+300 seconds; the web UI and API accept audio seeds from 0 to 4294967295. The
+`audio_duration_sec` runtime setting also accepts 1-300 through `POST /api/settings/runtime` or
+the settings file (`0` restores per-model defaults); audio.cpp's planner may clamp a request the
+loaded model cannot serve. The API's `audio_seed` default is 42.
+
+Image generation uses the `sd_seed` runtime setting. Its default is 42; `0` requests a random
+seed. Set it through `POST /api/settings/runtime` or the web workspace. The native Generation
+menu can retain the current seed or choose a common seed value.
 
 ## Other GGUF text models
 

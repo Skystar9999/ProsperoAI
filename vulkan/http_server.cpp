@@ -1004,6 +1004,24 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if (it.key() == "audio_seed" && it.value().is_number_unsigned())
+            {
+                const auto seed = it.value().get<std::uint64_t>();
+                if (prospero_settings::valid_seed(seed))
+                {
+                    p.audio_seed = static_cast<unsigned>(seed);
+                    valid = true;
+                }
+            }
+            else if (it.key() == "sd_seed" && it.value().is_number_unsigned())
+            {
+                const auto seed = it.value().get<std::uint64_t>();
+                if (prospero_settings::valid_seed(seed))
+                {
+                    p.sd_seed = static_cast<unsigned>(seed);
+                    valid = true;
+                }
+            }
             if (!valid)
             {
                 openai_error(api, sock, "400 Bad Request", "invalid_settings",
@@ -1027,6 +1045,8 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"thinking", p.thinking},
                        {"idle_unload_minutes", p.idle_unload_minutes},
                        {"audio_duration_sec", p.audio_duration_sec},
+                       {"audio_seed", p.audio_seed},
+                       {"sd_seed", p.sd_seed},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
                        {"chatterbox_language", prospero_language::chatterbox_language(p.chatterbox_language).code},

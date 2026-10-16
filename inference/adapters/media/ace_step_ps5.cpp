@@ -172,11 +172,14 @@ extern "C" int ps5_ace_step_generate(const char *root, const char *prompt,
         }
         request = audiocpp_request_create();
         char duration[16];
-        const unsigned configured_duration = prospero_settings::get().audio_duration_sec;
-        std::snprintf(duration, sizeof(duration), "%u", configured_duration ? configured_duration : 8u);
+        char seed[16];
+        const auto settings = prospero_settings::get();
+        std::snprintf(duration, sizeof(duration), "%u",
+                      settings.audio_duration_sec ? settings.audio_duration_sec : 8u);
+        std::snprintf(seed, sizeof(seed), "%u", settings.audio_seed);
         if (!request || audiocpp_request_set_text(request, prompt, nullptr) != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "duration_sec", duration) != AUDIOCPP_OK ||
-            audiocpp_request_set_option(request, "seed", "42") != AUDIOCPP_OK)
+            audiocpp_request_set_option(request, "seed", seed) != AUDIOCPP_OK)
         {
             log_error("request setup failed");
             result_code = 3;

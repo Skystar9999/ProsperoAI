@@ -5,14 +5,16 @@
 #include "generation_limits.hpp"
 #include "chatterbox_languages.hpp"
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #ifndef PROSPERO_SETTINGS_PATH
 #define PROSPERO_SETTINGS_PATH "/download0/prosperoai.cfg"
 #endif
 namespace prospero_settings {
-struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0; };
+struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0, audio_seed = 42, sd_seed = 42; };
 inline std::mutex mutex;
 inline bool valid_context(unsigned n) {
     return n == 0 || n == 4096 || n == 8192 || n == 16384 || n == 32768 || n == 65536 ||
@@ -24,10 +26,13 @@ inline bool valid_idle_unload_minutes(unsigned n) {
 inline bool valid_audio_duration_sec(unsigned n) {
     return n <= 300;
 }
+inline bool valid_seed(std::uint64_t n) {
+    return n <= std::numeric_limits<unsigned>::max();
+}
 inline Runtime read_unlocked() {
     Runtime p;
     if (auto *f = std::fopen(PROSPERO_SETTINGS_PATH, "rb")) {
-        char line[256]; unsigned v;
+        char line[256]; unsigned v; unsigned long long wide;
         while (std::fgets(line, sizeof(line), f)) {
             if (std::sscanf(line, "context=%u", &v) == 1 && valid_context(v)) p.context = v;
             else if (std::sscanf(line, "tokens=%u", &v) == 1 && prospero_generation::valid_output_limit(v)) p.output_limit = v;
@@ -38,6 +43,8 @@ inline Runtime read_unlocked() {
             else if (std::sscanf(line, "chatterbox_voice=%u", &v) == 1 && v < 128) p.chatterbox_voice = v;
             else if (std::sscanf(line, "chatterbox_language=%u", &v) == 1 && prospero_language::valid_chatterbox_language(v)) p.chatterbox_language = v;
             else if (std::sscanf(line, "audio_duration_sec=%u", &v) == 1 && valid_audio_duration_sec(v)) p.audio_duration_sec = v;
+            else if (std::sscanf(line, "audio_seed=%llu", &wide) == 1 && valid_seed(wide)) p.audio_seed = static_cast<unsigned>(wide);
+            else if (std::sscanf(line, "sd_seed=%llu", &wide) == 1 && valid_seed(wide)) p.sd_seed = static_cast<unsigned>(wide);
         }
         std::fclose(f);
     }
@@ -50,11 +57,11 @@ inline bool set_unlocked(Runtime p) {
     if (auto *f = std::fopen(PROSPERO_SETTINGS_PATH, "rb")) {
         char line[256];
         while (std::fgets(line, sizeof(line), f))
-            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19)) contents += line;
+            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19) && std::strncmp(line, "audio_seed=", 11) && std::strncmp(line, "sd_seed=", 8)) contents += line;
         std::fclose(f);
     }
     if (!contents.empty() && contents.back() != '\n') contents += '\n';
-    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec);
+    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\naudio_seed=%u\nsd_seed=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec, p.audio_seed, p.sd_seed);
     contents += fields;
     auto *f = std::fopen(PROSPERO_SETTINGS_PATH ".tmp", "wb");
     if (!f) return false;

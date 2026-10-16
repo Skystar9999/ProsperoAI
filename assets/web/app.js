@@ -267,11 +267,11 @@ document.addEventListener('click',e=>{if(e.target.closest('button'))sound();});
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-category]')){const chosen=b===button;b.classList.toggle('selected',chosen);b.setAttribute('aria-selected',String(chosen));$('setting-'+b.dataset.category).hidden=!chosen;}};
 $('preview-send').onclick=()=>{newConversation();$('prompt').value='Tell me a story.';$('prompt').focus();};
 
-let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0;
+let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0,savedAudioSeed=42,savedSdSeed=42;
 let runtimeSettingsQueue=Promise.resolve();
 function runtimeSettings(change){const result=runtimeSettingsQueue.then(()=>applyRuntimeSettings(change));runtimeSettingsQueue=result.catch(()=>{});return result;}
 async function applyRuntimeSettings(change) {
-  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','kokoro-voice','workspace-voice'].map($).filter(Boolean);
+  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','audio-seed','sd-seed','kokoro-voice','workspace-voice'].map($).filter(Boolean);
   controls.forEach(el => el.disabled = true);
   try {
     const response = await api('/api/settings/runtime', change ? {method:'POST',body:JSON.stringify(change)} : {});
@@ -281,8 +281,12 @@ async function applyRuntimeSettings(change) {
     $('length').value = String(settings.output_limit ?? 0);
     $('runtime-thinking').checked = settings.thinking;
     $('runtime-idle-unload').value = String(settings.idle_unload_minutes);
-    if($('audio-duration'))$('audio-duration').value=String(settings.audio_duration_sec||0);
+    if($('audio-duration')){const duration=Number(settings.audio_duration_sec)||0;if(duration!==0&&![8,16,30,60,120,300].includes(duration)&&![...$('audio-duration').options].some(option=>Number(option.value)===duration))$('audio-duration').add(new Option(`${duration} seconds`,String(duration)));$('audio-duration').value=String(duration);}
     savedAudioDuration=Number(settings.audio_duration_sec)||0;
+    if($('audio-seed'))$('audio-seed').value=String(settings.audio_seed??42);
+    savedAudioSeed=Number(settings.audio_seed??42);
+    if($('sd-seed'))$('sd-seed').value=String(settings.sd_seed??42);
+    savedSdSeed=Number(settings.sd_seed??42);
     savedKokoroVoice = settings.kokoro_voice || 'af_heart';
     savedChatterboxVoice = settings.chatterbox_voice || 'cemo';
     savedChatterboxLanguage = settings.chatterbox_language || 'en';
@@ -295,6 +299,8 @@ async function applyRuntimeSettings(change) {
     if($('workspace-voice-feedback'))$('workspace-voice-feedback').textContent = '';
   } catch (error) {
     if(change?.audio_duration_sec!==undefined&&$('audio-duration'))$('audio-duration').value=String(savedAudioDuration);
+    if(change?.audio_seed!==undefined&&$('audio-seed'))$('audio-seed').value=String(savedAudioSeed);
+    if(change?.sd_seed!==undefined&&$('sd-seed'))$('sd-seed').value=String(savedSdSeed);
     if(change?.kokoro_voice && $('kokoro-voice'))$('kokoro-voice').value=savedKokoroVoice;
     if(change?.chatterbox_voice||change?.chatterbox_language)populateWorkspaceVoicePicker(current?.model || selectedModel);
     $('runtime-feedback').textContent = error.message;
@@ -302,9 +308,51 @@ async function applyRuntimeSettings(change) {
   }
   finally { controls.forEach(el => el.disabled = false); }
 }
-const audioDurationLabel=document.createElement('label');audioDurationLabel.textContent='Audio clip duration';const audioDuration=document.createElement('select');audioDuration.id='audio-duration';for(const [value,label] of [[0,'Model default'],[8,'8 seconds'],[16,'16 seconds'],[30,'30 seconds'],[60,'60 seconds'],[120,'120 seconds'],[300,'300 seconds]]){const option=document.createElement('option');option.value=String(value);option.textContent=label;audioDuration.append(option);}audioDurationLabel.append(audioDuration);const audioDurationHint=document.createElement('small');audioDurationHint.className='muted';audioDurationHint.textContent='ACE-Step and Stable Audio. The model may cap the duration.';$('runtime-feedback').before(audioDurationLabel,audioDurationHint);audioDurationLabel.hidden=true;audioDurationHint.hidden=true;
-function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const visible=Boolean(model&&modelKind(model)===2);audioDurationLabel.hidden=!visible;audioDurationHint.hidden=!visible;}
+const audioDurationLabel=document.createElement('label');
+audioDurationLabel.textContent='Audio clip duration';
+const audioDuration=document.createElement('select');
+audioDuration.id='audio-duration';
+for(const [value,label] of [[0,'Model default'],[8,'8 seconds'],[16,'16 seconds'],[30,'30 seconds'],[60,'60 seconds'],[120,'120 seconds'],[300,'300 seconds']]){
+  const option=document.createElement('option');
+  option.value=String(value);
+  option.textContent=label;
+  audioDuration.append(option);
+}
+audioDurationLabel.append(audioDuration);
+const audioDurationHint=document.createElement('small');
+audioDurationHint.className='muted';
+audioDurationHint.textContent='ACE-Step and Stable Audio. The model may cap the duration.';
+$('runtime-feedback').before(audioDurationLabel,audioDurationHint);
+audioDurationLabel.hidden=true;
+audioDurationHint.hidden=true;
+const audioSeedLabel=document.createElement('label');
+audioSeedLabel.textContent='Audio seed';
+const audioSeed=document.createElement('input');
+audioSeed.id='audio-seed';
+audioSeed.type='number';audioSeed.min='0';audioSeed.max='4294967295';audioSeed.step='1';
+audioSeedLabel.append(audioSeed);
+const audioSeedHint=document.createElement('small');
+audioSeedHint.className='muted';
+audioSeedHint.textContent='Reuse a seed to retry similar audio with the same model and prompt.';
+$('runtime-feedback').before(audioSeedLabel,audioSeedHint);
+audioSeedLabel.hidden=true;
+audioSeedHint.hidden=true;
+const sdSeedLabel=document.createElement('label');
+sdSeedLabel.textContent='Image seed (0 = random)';
+const sdSeed=document.createElement('input');
+sdSeed.id='sd-seed';
+sdSeed.type='number';sdSeed.min='0';sdSeed.max='4294967295';sdSeed.step='1';
+sdSeedLabel.append(sdSeed);
+const sdSeedHint=document.createElement('small');
+sdSeedHint.className='muted';
+sdSeedHint.textContent='Applies to Stable Diffusion and other supported image models.';
+$('runtime-feedback').before(sdSeedLabel,sdSeedHint);
+sdSeedLabel.hidden=true;
+sdSeedHint.hidden=true;
+function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const audioVisible=Boolean(model&&modelKind(model)===2),imageVisible=Boolean(model&&modelKind(model)===1);audioDurationLabel.hidden=!audioVisible;audioDurationHint.hidden=!audioVisible;audioSeedLabel.hidden=!audioVisible;audioSeedHint.hidden=!audioVisible;sdSeedLabel.hidden=!imageVisible;sdSeedHint.hidden=!imageVisible;}
 audioDuration.onchange=()=>runtimeSettings({audio_duration_sec:Number(audioDuration.value)});
+audioSeed.onchange=()=>{const value=Number(audioSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){audioSeed.value=String(savedAudioSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({audio_seed:value});};
+sdSeed.onchange=()=>{const value=Number(sdSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){sdSeed.value=String(savedSdSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({sd_seed:value});};
 const memoryGroup=document.createElement('div');memoryGroup.className='model-memory-settings';const memoryHeading=document.createElement('h2');memoryHeading.textContent='Model memory';const memoryDescription=document.createElement('p');memoryDescription.className='muted';memoryDescription.textContent='Release the active model after it has been idle.';const idleLabel=document.createElement('label');idleLabel.htmlFor='runtime-idle-unload';idleLabel.textContent='Unload model after';const idleSelect=document.createElement('select');idleSelect.id='runtime-idle-unload';for(const [value,label] of [[1,'1 minute'],[2,'2 minutes'],[5,'5 minutes'],[10,'10 minutes'],[30,'30 minutes'],[60,'60 minutes']]){const option=document.createElement('option');option.value=String(value);option.textContent=label;idleSelect.append(option);}idleLabel.append(idleSelect);memoryGroup.append(memoryHeading,memoryDescription,idleLabel);$('runtime-feedback').before(memoryGroup);
 for (const [id,key] of [['runtime-context','context'],['length','output_limit'],['runtime-thinking','thinking'],['runtime-idle-unload','idle_unload_minutes']]) {
   $(id).onchange = () => runtimeSettings({[key]:['thinking'].includes(key) ? $(id).checked : ['idle_unload_minutes','output_limit'].includes(key) ? Number($(id).value) : $(id).value});
