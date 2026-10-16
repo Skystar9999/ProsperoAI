@@ -174,6 +174,26 @@ navigation at supported text sizes and contrast settings. Translated pages do no
 clip labels, and supported right-to-left scripts render in the correct order with
 shaping.
 
+## Current implementation snapshot (PR #39)
+
+The first implementation pass adds foundations across all ten areas. It does not yet satisfy
+every acceptance criterion above. In particular, safe console storage telemetry, per-model fit
+warnings, the short-lived browser authorization flow, complete crash lifecycle coverage, media
+organization, and translated/right-to-left flows remain open.
+
+| # | Implemented in this pass | Remaining acceptance work |
+| --- | --- | --- |
+| 1 | Shared native/API model selection coordinator, runtime lock, and published state. | Queue/recovery semantics and full concurrent/failure coverage. |
+| 2 | Native Workspace picker search and selected/ready distinction. | Capability controls, progress, and matching status in both pickers. |
+| 3 | Live Vulkan/direct/flexible-memory snapshot in API and web UI. | Measured per-model/settings fit estimates and pre-load warnings. |
+| 4 | First-party bearer-key prompt behavior documented; browser key is tab-scoped. | Short-lived browser sessions and visible network exposure settings. |
+| 5 | Bounded persistent model-event journal and JSON export. | Lifecycle, allocation, and API failure coverage across crash/restart paths. |
+| 6 | Native generation sections and plain-language setting explanations. | Advanced/common grouping and complete model-specific range/default guidance. |
+| 7 | Four-texture LRU cap and ccache compiler launcher for PS5 runtime builds. | Before/after GPU memory and clean/incremental build measurements. |
+| 8 | Required download sizes exposed and shown before download. | Free-space preflight; current PS5 storage availability is reported as unknown. |
+| 9 | Web conversation rename, JSON export/import, and existing search. | Archive/pin, media gallery, conversation links, and media delete/export. |
+| 10 | Visible web focus rings with a stronger high-contrast style. | Translated core flows and shaping/right-to-left support. |
+
 ## Suggested order
 
 1. Build the shared model manager and common state transitions.
