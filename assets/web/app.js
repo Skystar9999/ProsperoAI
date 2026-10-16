@@ -233,7 +233,7 @@ $('delete-dialog').addEventListener('close',async()=>{
     renderHistory();
 });
 function updateModelChip(){const chip=$('model-chip'),model=models.find(item=>item.id===current?.model),name=current?.modelName||model?.name||current?.model||'';chip.textContent=name?`Model: ${name}`:'Choose a model';chip.title=name?`This conversation uses ${name}`:'Choose a model for this conversation';chip.hidden=false;}
-function openChat(){page('workspace');$('welcome').hidden=true;$('chat').hidden=false;$('chat-title').textContent=current?.title||'A little room for big ideas.';updateModelChip();modelChooser.value=workspaceModelValue();$('model-load-status').textContent=currentModelChosen?`${current.modelName||current.model} is selected for this conversation.`:current?.model?'Choose this conversation’s model, then start typing to load it.':selectedModel?`${models.find(item=>item.id===selectedModel)?.name||selectedModel} is available. Choose it to use it in this conversation.`:'Choose a model, then start typing to load it.';const model=models.find(item=>item.id===(current?.model||selectedModel)),tts=currentModelChosen&&(current?.purpose==='text-to-speech'||model?.purpose==='text-to-speech');$('workspace-voice-group').hidden=!tts;if(tts){populateWorkspaceVoicePicker(model?.id||current?.model||selectedModel);const chatterbox=String(model?.id||current?.model||selectedModel).includes('chatterbox');$('chatterbox-upload-label').hidden=!chatterbox;void runtimeSettings();if(chatterbox)void refreshCustomChatterboxVoice();}}
+function openChat(){page('workspace');$('welcome').hidden=true;$('chat').hidden=false;$('chat-title').textContent=current?.title||'A little room for big ideas.';updateModelChip();modelChooser.value=workspaceModelValue();$('model-load-status').textContent=currentModelChosen?`${current.modelName||current.model} is selected for this conversation.`:current?.model?'Choose this conversation’s model, then start typing to load it.':selectedModel?`${models.find(item=>item.id===selectedModel)?.name||selectedModel} is available. Choose it to use it in this conversation.`:'Choose a model, then start typing to load it.';const model=models.find(item=>item.id===(current?.model||selectedModel)),tts=currentModelChosen&&(current?.purpose==='text-to-speech'||model?.purpose==='text-to-speech');$('workspace-voice-group').hidden=!tts;syncAudioDurationVisibility();if(tts){populateWorkspaceVoicePicker(model?.id||current?.model||selectedModel);const chatterbox=String(model?.id||current?.model||selectedModel).includes('chatterbox');$('chatterbox-upload-label').hidden=!chatterbox;void runtimeSettings();if(chatterbox)void refreshCustomChatterboxVoice();}}
 $('history-kind').onchange=renderHistory;
 $('history-search').oninput=renderHistory;
 function newConversation(){
@@ -267,11 +267,11 @@ document.addEventListener('click',e=>{if(e.target.closest('button'))sound();});
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-category]')){const chosen=b===button;b.classList.toggle('selected',chosen);b.setAttribute('aria-selected',String(chosen));$('setting-'+b.dataset.category).hidden=!chosen;}};
 $('preview-send').onclick=()=>{newConversation();$('prompt').value='Tell me a story.';$('prompt').focus();};
 
-let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false;
+let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0;
 let runtimeSettingsQueue=Promise.resolve();
 function runtimeSettings(change){const result=runtimeSettingsQueue.then(()=>applyRuntimeSettings(change));runtimeSettingsQueue=result.catch(()=>{});return result;}
 async function applyRuntimeSettings(change) {
-  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','kokoro-voice','workspace-voice'].map($).filter(Boolean);
+  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','kokoro-voice','workspace-voice'].map($).filter(Boolean);
   controls.forEach(el => el.disabled = true);
   try {
     const response = await api('/api/settings/runtime', change ? {method:'POST',body:JSON.stringify(change)} : {});
@@ -281,6 +281,8 @@ async function applyRuntimeSettings(change) {
     $('length').value = String(settings.output_limit ?? 0);
     $('runtime-thinking').checked = settings.thinking;
     $('runtime-idle-unload').value = String(settings.idle_unload_minutes);
+    if($('audio-duration'))$('audio-duration').value=String(settings.audio_duration_sec||0);
+    savedAudioDuration=Number(settings.audio_duration_sec)||0;
     savedKokoroVoice = settings.kokoro_voice || 'af_heart';
     savedChatterboxVoice = settings.chatterbox_voice || 'cemo';
     savedChatterboxLanguage = settings.chatterbox_language || 'en';
@@ -292,6 +294,7 @@ async function applyRuntimeSettings(change) {
     $('runtime-feedback').textContent = '';
     if($('workspace-voice-feedback'))$('workspace-voice-feedback').textContent = '';
   } catch (error) {
+    if(change?.audio_duration_sec!==undefined&&$('audio-duration'))$('audio-duration').value=String(savedAudioDuration);
     if(change?.kokoro_voice && $('kokoro-voice'))$('kokoro-voice').value=savedKokoroVoice;
     if(change?.chatterbox_voice||change?.chatterbox_language)populateWorkspaceVoicePicker(current?.model || selectedModel);
     $('runtime-feedback').textContent = error.message;
@@ -299,6 +302,9 @@ async function applyRuntimeSettings(change) {
   }
   finally { controls.forEach(el => el.disabled = false); }
 }
+const audioDurationLabel=document.createElement('label');audioDurationLabel.textContent='Audio clip duration';const audioDuration=document.createElement('select');audioDuration.id='audio-duration';for(const [value,label] of [[0,'Model default'],[8,'8 seconds'],[16,'16 seconds'],[30,'30 seconds'],[60,'60 seconds'],[120,'120 seconds'],[300,'300 seconds]]){const option=document.createElement('option');option.value=String(value);option.textContent=label;audioDuration.append(option);}audioDurationLabel.append(audioDuration);const audioDurationHint=document.createElement('small');audioDurationHint.className='muted';audioDurationHint.textContent='ACE-Step and Stable Audio. The model may cap the duration.';$('runtime-feedback').before(audioDurationLabel,audioDurationHint);audioDurationLabel.hidden=true;audioDurationHint.hidden=true;
+function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const visible=Boolean(model&&modelKind(model)===2);audioDurationLabel.hidden=!visible;audioDurationHint.hidden=!visible;}
+audioDuration.onchange=()=>runtimeSettings({audio_duration_sec:Number(audioDuration.value)});
 const memoryGroup=document.createElement('div');memoryGroup.className='model-memory-settings';const memoryHeading=document.createElement('h2');memoryHeading.textContent='Model memory';const memoryDescription=document.createElement('p');memoryDescription.className='muted';memoryDescription.textContent='Release the active model after it has been idle.';const idleLabel=document.createElement('label');idleLabel.htmlFor='runtime-idle-unload';idleLabel.textContent='Unload model after';const idleSelect=document.createElement('select');idleSelect.id='runtime-idle-unload';for(const [value,label] of [[1,'1 minute'],[2,'2 minutes'],[5,'5 minutes'],[10,'10 minutes'],[30,'30 minutes'],[60,'60 minutes']]){const option=document.createElement('option');option.value=String(value);option.textContent=label;idleSelect.append(option);}idleLabel.append(idleSelect);memoryGroup.append(memoryHeading,memoryDescription,idleLabel);$('runtime-feedback').before(memoryGroup);
 for (const [id,key] of [['runtime-context','context'],['length','output_limit'],['runtime-thinking','thinking'],['runtime-idle-unload','idle_unload_minutes']]) {
   $(id).onchange = () => runtimeSettings({[key]:['thinking'].includes(key) ? $(id).checked : ['idle_unload_minutes','output_limit'].includes(key) ? Number($(id).value) : $(id).value});

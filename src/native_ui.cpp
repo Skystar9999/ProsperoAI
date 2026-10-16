@@ -1547,6 +1547,21 @@ void NativeUI::Impl::build_generation_form()
         20, "Unload model after",
         {"1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes", "60 minutes"},
         selected_idle);
+    const auto &state = app_.state();
+    const bool audio_model = state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Audio;
+    if (audio_model)
+    {
+        constexpr unsigned durations[] = {0, 8, 16, 30, 60, 120, 300};
+        int selected_duration = 0;
+        for (int i = 0; i < 7; ++i)
+            if (durations[i] == runtime.audio_duration_sec)
+                selected_duration = i;
+        form_.add_choice(24, "Audio clip duration",
+                         {"Model default", "8 seconds", "16 seconds", "30 seconds",
+                          "60 seconds", "120 seconds", "300 seconds"},
+                         selected_duration);
+    }
     form_.add_value(9, "Processing", "On this console");
     form_.enter();
 }
@@ -1604,6 +1619,21 @@ void NativeUI::Impl::apply_generation_form()
     constexpr unsigned idle_minutes[] = {1, 2, 5, 10, 30, 60};
     p.idle_unload_minutes = idle_minutes[std::clamp(form_.choice_index(20), 0, 5)];
     app_.set_preferences(std::move(p));
+    auto runtime = prospero_settings::get();
+    const auto &state = app_.state();
+    const bool audio_model = state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Audio;
+    if (audio_model)
+    {
+        constexpr unsigned durations[] = {0, 8, 16, 30, 60, 120, 300};
+        runtime.audio_duration_sec = durations[std::clamp(form_.choice_index(24), 0, 6)];
+        if (!prospero_settings::set(runtime))
+        {
+            toasts_.push(ui::StatusKind::warning, "Generation settings not saved",
+                         "Could not save the audio duration setting.");
+            build_generation_form();
+        }
+    }
 }
 
 void NativeUI::Impl::sync()
