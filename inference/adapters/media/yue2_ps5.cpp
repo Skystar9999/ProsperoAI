@@ -15,8 +15,8 @@
 
 extern "C"
 {
-int sceKernelDebugOutText(int, const char *);
-std::uint64_t sceKernelGetProcessTime(void);
+    int sceKernelDebugOutText(int, const char *);
+    std::uint64_t sceKernelGetProcessTime(void);
 }
 
 namespace
@@ -54,8 +54,8 @@ void write_u32(std::FILE *file, std::uint32_t value)
     write_u16(file, static_cast<std::uint16_t>(value >> 16));
 }
 
-bool write_wav(const char *path, const float *samples, std::size_t frames,
-               int sample_rate, int channels)
+bool write_wav(const char *path, const float *samples, std::size_t frames, int sample_rate,
+               int channels)
 {
     if (!samples || !frames || sample_rate <= 0 || channels <= 0 || channels > 8 ||
         frames > (UINT32_MAX - 36u) / (static_cast<std::uint64_t>(channels) * 2u))
@@ -80,8 +80,7 @@ bool write_wav(const char *path, const float *samples, std::size_t frames,
     for (std::size_t i = 0; i < sample_count; ++i)
     {
         float value = std::isfinite(samples[i]) ? std::clamp(samples[i], -1.0f, 1.0f) : 0.0f;
-        const auto pcm = static_cast<std::int16_t>(value < 0 ? value * 32768.0f
-                                                             : value * 32767.0f);
+        const auto pcm = static_cast<std::int16_t>(value < 0 ? value * 32768.0f : value * 32767.0f);
         write_u16(file, static_cast<std::uint16_t>(pcm));
     }
     const bool complete = std::ferror(file) == 0;
@@ -91,16 +90,19 @@ bool write_wav(const char *path, const float *samples, std::size_t frames,
 void log_error(const char *stage)
 {
     char line[512];
-    std::snprintf(line, sizeof(line), "[prosperoai:yue2] %s: %.420s\n",
-                  stage, audiocpp_last_error());
+    std::snprintf(line, sizeof(line), "[prosperoai:yue2] %s: %.420s\n", stage,
+                  audiocpp_last_error());
     sceKernelDebugOutText(0, line);
 }
 
 void log_memory(const char *stage)
 {
     char line[160];
-    std::snprintf(line, sizeof(line), "[prosperoai:yue2] %s: largest free block %llu MiB, total free %llu MiB, flexible free %llu MiB\n",
-                  stage, static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
+    std::snprintf(line, sizeof(line),
+                  "[prosperoai:yue2] %s: largest free block %llu MiB, total free %llu MiB, "
+                  "flexible free %llu MiB\n",
+                  stage,
+                  static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
                   static_cast<unsigned long long>(prospero_memory::free_total() >> 20),
                   static_cast<unsigned long long>(prospero_memory::flexible_free() >> 20));
     sceKernelDebugOutText(0, line);
@@ -113,7 +115,8 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
     release_engine();
     const audiocpp_model_config model_config = {"yue2", nullptr, nullptr, nullptr};
     if (audiocpp_registry_create(nullptr, &g_registry) != AUDIOCPP_OK ||
-        audiocpp_model_load(g_registry, root.c_str(), &model_config, nullptr, &g_model) != AUDIOCPP_OK)
+        audiocpp_model_load(g_registry, root.c_str(), &model_config, nullptr, &g_model) !=
+            AUDIOCPP_OK)
     {
         log_error("model load failed");
         release_engine();
@@ -126,11 +129,29 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
         release_engine();
         return false;
     }
+    // audio.cpp pruned the YuE2 graph arena defaults to 32 MiB (2026-10-02),
+    // which only fits short generations; longer songs fail deterministically
+    // in the NAR/VAE stages. Size the arenas for songs up to ~5 minutes.
+    static const struct
+    {
+        const char *key;
+        const char *value;
+    } k_arena_options[] = {
+        {"yue2.ar_prefill_graph_arena_mb", "256"},
+        {"yue2.ar_decode_graph_arena_mb", "64"},
+        {"yue2.nar_graph_arena_mb", "1024"},
+        {"yue2.vae_graph_arena_mb", "512"},
+    };
+    for (const auto &arena : k_arena_options)
+    {
+        if (audiocpp_options_set(g_options, arena.key, arena.value) != AUDIOCPP_OK)
+            log_error((std::string("arena option rejected: ") + arena.key).c_str());
+    }
     if (progress)
         progress("Loading YuE2 on Vulkan");
     const audiocpp_backend_config backend_config = {"vulkan", 0, 4};
-    if (audiocpp_session_create(g_model, "gen", "offline", &backend_config,
-                                g_options, &g_session) != AUDIOCPP_OK)
+    if (audiocpp_session_create(g_model, "gen", "offline", &backend_config, g_options,
+                                &g_session) != AUDIOCPP_OK)
     {
         log_error("Vulkan session creation failed");
         release_engine();
@@ -147,9 +168,8 @@ extern "C" void ps5_yue2_release()
     release_engine();
 }
 
-extern "C" int ps5_yue2_generate(const char *root, const char *prompt,
-                                 char *response, std::size_t response_capacity,
-                                 std::uint64_t *elapsed_microseconds,
+extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *response,
+                                 std::size_t response_capacity, std::uint64_t *elapsed_microseconds,
                                  void (*progress)(const char *))
 {
     if (!root || !*root || !prompt || !*prompt || !response || !response_capacity)
@@ -199,7 +219,8 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt,
         const float *samples = nullptr;
         std::size_t frames = 0;
         int sample_rate = 0, channels = 0;
-        if (audiocpp_result_audio(result, &samples, &frames, &sample_rate, &channels) != AUDIOCPP_OK ||
+        if (audiocpp_result_audio(result, &samples, &frames, &sample_rate, &channels) !=
+                AUDIOCPP_OK ||
             !write_wav(output, samples, frames, sample_rate, channels))
         {
             log_error("WAV output failed");
