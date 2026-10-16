@@ -1,6 +1,6 @@
 # ProsperoAI improvement plan
 
-This plan records five focused improvements for the native PS5 app, hosted web UI,
+This plan records seven focused improvements for the native PS5 app, hosted web UI,
 and HTTP API. It is a roadmap; it does not claim that the work below has been
 implemented.
 
@@ -89,13 +89,51 @@ Diagnostics. Keep verbose runtime tracing opt-in.
 transition and relevant error code. The journal is size-bounded, contains no user
 content or secrets, and can be exported from the app.
 
+## 6. Make native generation settings easier to understand
+
+**Problem.** The native Generation settings expose controls across multiple model
+types, but terms such as context, KV cache, seed, dimensions, duration, and output
+limit are not equally clear to every user. Model-specific settings are easier to
+misconfigure when their effect is not explained in place.
+
+**Plan.** Group settings by the selected model's capability and use plain-language
+labels with short explanations and useful defaults. Separate common controls from an
+Advanced section, keep valid ranges visible, and explain when a setting applies only
+to image, audio, speech, or text generation. Preserve the existing API's precise
+values and validation.
+
+**Acceptance criteria.** A user can tell what each visible setting changes, which
+model types use it, and how to return to the default. Irrelevant controls are hidden
+or clearly marked as inactive, and saved/API values are reflected consistently.
+
+## 7. Reduce app GPU memory use and build time
+
+**Problem.** The application shares a constrained address space and GPU memory with
+its inference runtimes. Separately, native builds include large runtime and UI
+components; slow rebuilds make iteration and release work take longer.
+
+**Plan.** Measure app-owned GPU allocations and peak memory by screen and workload.
+Release unused UI textures and intermediate buffers promptly, reduce retained
+resource sizes where quality is unaffected, and avoid duplicating assets in memory.
+For build speed, measure clean and incremental builds, then improve dependency
+tracking, caching, and parallel compilation so unchanged components are not rebuilt.
+Keep reproducible output and correctness checks intact.
+
+**Acceptance criteria.** Before/after measurements show lower app-owned GPU memory
+use on representative screens and workloads, without changing generated output
+quality or causing regressions. Clean and incremental build timings are recorded;
+incremental changes rebuild only affected components and produce the same verified
+app artifacts.
+
 ## Suggested order
 
 1. Build the shared model manager and common state transitions.
 2. Use that state to improve the native and web model pickers.
-3. Add bounded diagnostics for transitions and failures.
-4. Collect console memory measurements and add conservative warnings.
-5. Design and implement browser authorization alongside the API security review.
+3. Improve the native generation settings using the model capability metadata.
+4. Add bounded diagnostics for transitions and failures.
+5. Measure console memory and build time, then optimize against those baselines.
+6. Collect model memory measurements and add conservative preparation warnings.
+7. Design and implement browser authorization alongside the API security review.
 
 Each item should be implemented and verified as a separate change, with console
 verification for runtime, memory, and crash-handling behavior.
