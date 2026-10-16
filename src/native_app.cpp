@@ -421,20 +421,21 @@ void App::poll()
         if (selected.revision != model_manager_revision_)
         {
             model_manager_revision_ = selected.revision;
-            const auto found = std::find_if(state_.models.begin(), state_.models.end(),
-                                            [&](const Model &model)
-                                            { return model.id == selected.model_id; });
+            const auto found =
+                std::find_if(state_.models.begin(), state_.models.end(),
+                             [&](const Model &model) { return model.id == selected.model_id; });
             if (found != state_.models.end())
             {
                 state_.selected_model = static_cast<int>(found - state_.models.begin());
                 state_.preferences.model_id = selected.model_id;
                 state_.ready = selected.stage == model_manager::Stage::ready;
                 state_.preparing = selected.stage == model_manager::Stage::preparing;
-                state_.status = selected.stage == model_manager::Stage::failed
-                                    ? selected.error
-                                : state_.ready ? found->name + " is ready"
-                                : state_.preparing ? found->name + " is loading…"
-                                                   : found->name + " selected; prepare it to start a new conversation";
+                state_.status =
+                    selected.stage == model_manager::Stage::failed ? selected.error
+                    : state_.ready                                 ? found->name + " is ready"
+                    : state_.preparing
+                        ? found->name + " is loading…"
+                        : found->name + " selected; prepare it to start a new conversation";
                 preferences_dirty_ = true;
                 ++state_.revision;
             }
@@ -777,7 +778,8 @@ void App::work()
                 if (result_.models[i].id == selected.model_id)
                     result_.selected_model = static_cast<int>(i);
             prospero::debug::event(result_.ready ? "model-ready" : "model-failed",
-                                   selected.model_id.c_str(), result_.ready ? "" : "prepare-failed");
+                                   selected.model_id.c_str(),
+                                   result_.ready ? "" : "prepare-failed");
 #ifdef PS5_LLAMA_VULKAN
             if (result_.ready)
             {
@@ -833,7 +835,8 @@ void App::work()
         result_.retry_available = false;
         result_.stats_valid = false;
         result_.ready = index >= 0 && model_manager::select(record.model_id, true);
-        prospero::debug::event(result_.ready ? "conversation-model-ready" : "conversation-model-failed",
+        prospero::debug::event(result_.ready ? "conversation-model-ready"
+                                             : "conversation-model-failed",
                                record.model_id, result_.ready ? "" : "prepare-failed");
 #ifdef PS5_LLAMA_VULKAN
         if (result_.ready)

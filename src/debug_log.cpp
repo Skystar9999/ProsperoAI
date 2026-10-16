@@ -177,18 +177,21 @@ void event(const char *operation, const char *model_id, const char *error_code)
     if (logs_folder.empty())
         return;
     const std::string path = logs_folder + "/events.jsonl";
-    struct stat info{};
+    struct stat info
+    {
+    };
     if (::stat(path.c_str(), &info) == 0 && info.st_size > 60 * 1024)
     {
         std::rename(path.c_str(), (logs_folder + "/events.prev.jsonl").c_str());
     }
-    auto safe = [](const char *value) {
+    auto safe = [](const char *value)
+    {
         std::string result;
         if (!value)
             return result;
         for (const unsigned char c : std::string(value))
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/')
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.' || c == '/')
                 result.push_back(static_cast<char>(c));
         if (result.size() > 96)
             result.resize(96);
@@ -196,7 +199,8 @@ void event(const char *operation, const char *model_id, const char *error_code)
     };
     if (std::FILE *journal = std::fopen(path.c_str(), "ab"))
     {
-        std::fprintf(journal, "{\"time\":%lld,\"operation\":\"%s\",\"model\":\"%s\",\"error\":\"%s\"}\n",
+        std::fprintf(journal,
+                     "{\"time\":%lld,\"operation\":\"%s\",\"model\":\"%s\",\"error\":\"%s\"}\n",
                      static_cast<long long>(std::time(nullptr)), safe(operation).c_str(),
                      safe(model_id).c_str(), safe(error_code).c_str());
         std::fclose(journal);
@@ -204,26 +208,29 @@ void event(const char *operation, const char *model_id, const char *error_code)
 }
 
 void model_memory_sample(const char *model_id, unsigned context_tokens, unsigned output_limit,
-                         bool thinking,
-                         std::uint64_t vulkan_heap_bytes, std::uint64_t flexible_free_bytes)
+                         bool thinking, std::uint64_t vulkan_heap_bytes,
+                         std::uint64_t flexible_free_bytes)
 {
     std::lock_guard<std::mutex> lock(mutex);
     if (logs_folder.empty())
         return;
-    auto safe = [](const char *value) {
+    auto safe = [](const char *value)
+    {
         std::string result;
         if (!value)
             return result;
         for (const unsigned char c : std::string(value))
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/')
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.' || c == '/')
                 result.push_back(static_cast<char>(c));
         if (result.size() > 96)
             result.resize(96);
         return result;
     };
     const std::string path = logs_folder + "/events.jsonl";
-    struct stat info{};
+    struct stat info
+    {
+    };
     if (::stat(path.c_str(), &info) == 0 && info.st_size > 60 * 1024)
         std::rename(path.c_str(), (logs_folder + "/events.prev.jsonl").c_str());
     if (std::FILE *journal = std::fopen(path.c_str(), "ab"))
@@ -259,8 +266,8 @@ MemorySummary model_memory_summary(const char *model_id)
             while (std::fgets(line, sizeof(line), journal))
             {
                 const auto event = nlohmann::json::parse(line, nullptr, false);
-                if (!event.is_object() || event.value("operation", std::string()) !=
-                                              "model-memory-sample" ||
+                if (!event.is_object() ||
+                    event.value("operation", std::string()) != "model-memory-sample" ||
                     event.value("model", std::string()) != model_id ||
                     !event.contains("vulkan_heap_bytes") ||
                     !event["vulkan_heap_bytes"].is_number_integer() ||
@@ -271,8 +278,8 @@ MemorySummary model_memory_summary(const char *model_id)
                 const auto free = event["flexible_free_bytes"].get<std::uint64_t>();
                 summary.largest_vulkan_heap_bytes =
                     std::max(summary.largest_vulkan_heap_bytes, heap);
-                summary.least_flexible_free_bytes = summary.samples
-                    ? std::min(summary.least_flexible_free_bytes, free) : free;
+                summary.least_flexible_free_bytes =
+                    summary.samples ? std::min(summary.least_flexible_free_bytes, free) : free;
                 ++summary.samples;
             }
             std::fclose(journal);

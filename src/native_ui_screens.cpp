@@ -173,9 +173,8 @@ void NativeUI::Impl::draw_conversation(ui::Canvas &canvas) const
              label(list, "YOUR SPACE", 122, 246, palette_.muted);
              static constexpr const char *titles[] = {"All conversations", "Text", "Image", "Audio",
                                                       "Voice"};
-             static constexpr const char *model_filters[] = {"All models", "Text models",
-                                                              "Image models", "Audio models",
-                                                              "Voice models"};
+             static constexpr const char *model_filters[] = {
+                 "All models", "Text models", "Image models", "Audio models", "Voice models"};
              const std::string model_title =
                  std::string(model_filters[workspace_model_filter_ + 1]) +
                  (workspace_model_query_.empty() ? "" : " · " + workspace_model_query_) +
