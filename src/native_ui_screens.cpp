@@ -173,8 +173,8 @@ void NativeUI::Impl::draw_conversation(ui::Canvas &canvas) const
              label(list, "YOUR SPACE", 122, 246, palette_.muted);
              static constexpr const char *titles[] = {"All conversations", "Text", "Image", "Audio",
                                                       "Voice"};
-             const std::string model_title =
-                 workspace_model_query_.empty() ? "Choose a model"
+             const std::string model_title = workspace_model_query_.empty()
+                                                 ? "Choose a model"
                                                  : "Filter: " + workspace_model_query_;
              text(list, fit(selecting_model_ ? model_title : titles[session_category_], 31, 310),
                   122, 292, 31, palette_.ink, true);
