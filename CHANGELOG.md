@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- Search now reaches 41 providers in nine selectable groups from the console itself: the
+  general web, code hosting, question sites, reference works, package registries, papers,
+  video, music and images. One query asked every provider in about eight seconds on the test
+  title, results carry their source and a score that ranks pages several providers agree on
+  first, and each provider's outcome is reported so throttling is distinguishable from an
+  empty index.
+- Added `/fetch <url>` and `POST /api/fetch`, which read one page as bounded plain text so a
+  model can follow a result. The command works in both conversations, the MCP bridge for
+  OpenCode gained the same tool, and the bridge accepts search scopes.
+- Settings now has a checkbox per group of sites, so a search can be narrowed to the groups
+  worth asking, and **Test search** reports how many providers answered.
+- `POST /api/fetch` now answers 400 for an address it cannot read, keeping 502 for a page
+  that was asked for and failed.
+- Search results are cached on the console for a day and the cache survives a restart of the
+  app, so repeating a query answers in milliseconds and does not ask the sites again.
+- Search no longer allocates the model downloader's 4 MB receive buffer: it borrows about
+  64 KB per provider and releases it with the request. Resident memory was unchanged across
+  328 provider requests, and the search module imports no graphics symbol at all, so a
+  search cannot take video memory from a loaded model. The HTTP client gained request headers, a per-session user agent,
+  cookies, compressed transfers, POST and a caller-chosen buffer size.
+- Replaced the single DuckDuckGo HTML route, which answers HTTP 202 with a throttle page
+  after a few queries; that page is now recognised and reported as rate limiting.
+- On-screen keyboard: a held direction keeps moving, and a held Square keeps deleting. L2
+  switches between letters and symbols and L1 is Shift; R2 is only Done (Send in a
+  conversation). R2 used to switch to symbols and press Done at once, with no way back to
+  letters.
+
 ## 01.006.000
 
 - Text, image, sound and speech generation now use one pinned upstream llama.cpp/GGML Vulkan

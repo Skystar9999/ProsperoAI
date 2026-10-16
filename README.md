@@ -259,7 +259,29 @@ leaves the app as it was. Models, settings and conversations are not touched: th
 
 This check and the downloads you start are the only requests the app makes on its own: one
 to homebrew.page (and to the catalog's mirror on GitHub Pages when that does not answer),
-naming the app and its version.
+naming the app and its version. Web search, described next, only sends a request when you
+ask it to.
+
+## Web search across sites
+
+With **Web search** switched on in Settings, `/search <query>` in a conversation asks many
+sites at once from the console itself and hands the answers to the model as sources to cite.
+Nine groups of providers are available: the general web, code hosting, question sites,
+reference works, package registries, papers, video, music and images, each with its own
+checkbox in Settings so a search can be narrowed. A result carries the
+address it came from and which provider found it, and a page several providers agree on is
+ranked first.
+
+`/fetch <url>` reads one page as plain text, so the model can follow a result it was given.
+There is no JavaScript, so this works on static pages.
+
+Over HTTP, `POST /api/search` takes a `query`, an optional `limit`, an optional `scopes`
+array naming the groups to ask, and `fresh` to bypass the cache; `POST /api/fetch` takes a
+`url`. Results of a search are kept in `/download0/prosperoai-search-cache.txt` for a day,
+so repeating a query costs nothing and the sites are not asked again. Every request is
+bounded in time and size, result text reaches the model as untrusted data, and a search
+borrows about 64 KB per provider and releases it when the request ends, so it does not
+compete with a loaded model for memory.
 
 ## HTTP server and browser interface
 
@@ -330,7 +352,7 @@ larger contexts, authentication and detailed compatibility notes.
 | Square | Start a new conversation in Workspace; search in Models |
 | L2 / R2 in Models | Previous / next model category |
 | Triangle | Insert Space while typing; otherwise retry, delete a focused conversation, or play saved audio; in Models, cancel the running download |
-| R2 while typing | Done; send from Workspace |
+| While typing | Square deletes (hold to repeat), Triangle is Space, L1 is Shift, L2 switches between letters and symbols, R2 is Done (Send in a conversation); a held direction keeps moving |
 | Options | Ask to close the app, once nothing is running and the conversation is saved |
 | Right stick | Scroll through the current conversation |
 | Physical USB keyboard | Type in the prompt field or the model search; Enter sends; Tab is R1 and Shift+Tab is L1 |

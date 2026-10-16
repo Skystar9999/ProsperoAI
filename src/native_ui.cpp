@@ -121,8 +121,13 @@ NativeUI::Impl::Impl(NativeUI &owner, App &app, FontSet &font_set, gfx::Renderer
     search_.style.max_rows = 0;
     search_.set_bounds({kLeft, 392, 612, 60});
     search_.set_placeholder("Search your models");
+    // Square deletes, Triangle is space, L1 is shift, L2 switches between letters and
+    // symbols, R2 is Done (Send in a conversation). R2 was also the kit's symbols key, so one
+    // press did both and there was no way back to letters.
     keyboard_.style.bindings = ui::KeyboardBindings::standard();
     keyboard_.style.bindings.space = Action::north;
+    keyboard_.style.bindings.shift = Action::page_prev;
+    keyboard_.style.bindings.layout = Action::jump_prev;
     keyboard_.style.bindings.done = Action::jump_next;
     keyboard_.style.max_length = 1023;
     keyboard_.set_bounds({360, 596, 1200, 310});
@@ -1595,6 +1600,8 @@ void NativeUI::Impl::build_generation_form()
             form_.add_value(33, "Upscaler model path", "models/upscalers/RealESRGAN_x4plus.pth");
     }
     form_.add_value(9, "Processing", "On this console");
+    form_.add_choice(22, "Web search", {"Off", "LibreY"}, runtime.web_search ? 1 : 0);
+    form_.add_value(23, "Search engine", "Built into ProsperoAI");
     form_.enter();
 }
 
@@ -1693,10 +1700,12 @@ void NativeUI::Impl::apply_generation_form()
         runtime_changed =
             runtime_changed || runtime.sd_upscale != prospero_settings::get().sd_upscale;
     }
-    if (runtime_changed && !prospero_settings::set(runtime))
+    runtime.web_search = form_.choice_index(22) == 1;
+    const bool search_changed = runtime.web_search != prospero_settings::get().web_search;
+    if ((runtime_changed || search_changed) && !prospero_settings::set(runtime))
     {
         toasts_.push(ui::StatusKind::warning, "Generation settings not saved",
-                     "Could not save media generation settings.");
+                     "Could not save generation settings.");
         build_generation_form();
     }
 }
@@ -2143,6 +2152,7 @@ void NativeUI::Impl::draw_footer(gfx::DrawList &list) const
     {
         hints[count++] = {ui::Button::cross, "Type"};
         hints[count++] = {ui::Button::triangle, "Space"};
+        hints[count++] = {ui::Button::l2, "Symbols"};
         hints[count++] = {ui::Button::r2, chat_keyboard_open_ ? "Send" : "Done"};
         hints[count++] = {ui::Button::circle, "Back"};
     }

@@ -23,8 +23,15 @@ class HttpApiTests(unittest.TestCase):
                         "-DPROSPERO_SESSION_TEST",
                         '-DPROSPERO_WEB_ASSET_ROOT="'+str(ROOT / 'assets/web')+'/"',
                         '-DPROSPERO_SETTINGS_PATH="'+str(tmp / "runtime.cfg")+'"', "-Wl,--gc-sections", "-I"+str(ROOT / "vulkan"), "-I"+str(ROOT / "include"),
+                        "-I"+str(ROOT / "search-engine/include"), "-I"+str(ROOT / "search-engine/src"),
                         "-I"+str(ROOT / ".deps/llama.cpp/vendor"),
                         str(ROOT / "tests/http_api_harness.cpp"), str(ROOT / "src/session_store.cpp"),
+                        str(ROOT / "search-engine/src/query.cpp"),
+                        str(ROOT / "search-engine/src/providers.cpp"),
+                        str(ROOT / "search-engine/src/scan.cpp"),
+                        str(ROOT / "search-engine/src/cache.cpp"),
+                        str(ROOT / "search-engine/src/search.cpp"),
+                        str(ROOT / "search-engine/src/transport.cpp"),
                         "-DPROSPERO_HOST", str(ROOT / "src/voice_recorder.cpp"),
                         "-o", str(cls.binary)], check=True)
 
@@ -70,6 +77,62 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn('401 Unauthorized', self.request('/api/settings/runtime', key='secret')[0])
         self.request('/api/settings/runtime', body={'context':'auto','kv':'auto','thinking':False,'idle_unload_minutes':2})
 
+    def test_search_settings_and_route_require_enabled_configuration(self):
+        header, body = self.request('/api/settings/runtime')
+        self.assertIn('200 OK', header)
+        self.assertFalse(json.loads(body)['web_search'])
+        header, body = self.request('/api/search', body={'query': 'ProsperoAI'})
+        self.assertIn('409 Conflict', header)
+        self.request('/api/settings/runtime', body={'web_search': True, 'web_search_timeout': 10})
+        settings = json.loads(self.request('/api/settings/runtime')[1])
+        self.assertTrue(settings['web_search'])
+        self.assertEqual(settings['web_search_timeout'], 10)
+        header, body = self.request('/api/search', body={'query': 'ProsperoAI', 'limit': 3})
+        self.assertIn('502 Bad Gateway', header)
+        self.assertIn('PS5 build only', json.loads(body)['error']['message'])
+        # Even a failed search says which providers were asked, so a caller can tell
+        # throttling from an empty index.
+        self.assertTrue(json.loads(body)['providers'])
+
+    def test_search_scopes_round_trip_and_select_providers(self):
+        # What the Settings checkboxes send is this bitmask, in the engine's scope
+        # order: bit 0 web, bit 1 code, bit 3 reference.
+        settings = json.loads(self.request('/api/settings/runtime')[1])
+        self.assertEqual(settings['search_scopes'], 511)
+        self.request('/api/settings/runtime', body={'web_search': True, 'search_scopes': 0b1011})
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1])['search_scopes'], 0b1011)
+        for invalid in ({'search_scopes': 0}, {'search_scopes': 512}, {'search_scopes': -1},
+                        {'search_scopes': '11'}):
+            self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1])['search_scopes'], 0b1011)
+
+        # A request may narrow the search further, and only the enabled scopes are asked.
+        asked = json.loads(self.request('/api/search', body={'query': 'ProsperoAI',
+                                                             'scopes': ['web', 'code']})[1])
+        sources = {provider['id'].split('.')[0] for provider in asked['providers']}
+        self.assertEqual(sources, {'web', 'code'})
+        # A scope switched off in Settings is not asked even when the caller names it.
+        asked = json.loads(self.request('/api/search', body={'query': 'ProsperoAI',
+                                                             'scopes': ['web', 'video']})[1])
+        self.assertEqual({provider['id'].split('.')[0] for provider in asked['providers']}, {'web'})
+        header, _ = self.request('/api/search', body={'query': 'ProsperoAI', 'scopes': ['video']})
+        self.assertIn('400 Bad Request', header)
+        header, _ = self.request('/api/search', body={'query': 'ProsperoAI', 'scopes': ['nonsense']})
+        self.assertIn('400 Bad Request', header)
+        self.request('/api/settings/runtime', body={'search_scopes': 511, 'web_search': False})
+
+    def test_fetch_route_validates_its_address(self):
+        self.request('/api/settings/runtime', body={'web_search': True})
+        for invalid in ({'url': 'ftp://example.org'}, {'url': 'not-a-url'}, {},
+                        {'url': 'https://example.org', 'limit': 10},
+                        {'url': 'https://example.org', 'limit': 999999}):
+            header, _ = self.request('/api/fetch', body=invalid)
+            self.assertIn('400 Bad Request', header)
+        header, body = self.request('/api/fetch', body={'url': 'https://example.org'})
+        self.assertIn('502 Bad Gateway', header)
+        self.assertIn('console build', json.loads(body)['error']['message'])
+        self.request('/api/settings/runtime', body={'web_search': False})
+        self.assertIn('409 Conflict', self.request('/api/fetch', body={'url': 'https://example.org'})[0])
     def test_chatterbox_language_is_selectable_and_validated(self):
         config = Path(self.scratch.name) / 'runtime.cfg'
         config.write_text('version=2\n')
@@ -324,7 +387,9 @@ class HttpApiTests(unittest.TestCase):
 
     def tools_request(self, content="lookup", stream=False):
         return {"model":"tiny.gguf", "messages":[{"role":"user","content":content}], "stream":stream,
-                "tools":[{"type":"function", "function":{"name":"lookup", "parameters":{"type":"object"}}}]}
+                "tools":[{"type":"function", "function":{"name":"lookup", "parameters":{
+                    "type":"object", "properties":{"query":{"type":"string", "minLength":2}},
+                    "required":["query"], "additionalProperties":False}}}]}
 
     def test_tool_calls_and_roundtrip(self):
         _, wire = self.request(body=self.tools_request())
@@ -342,7 +407,49 @@ class HttpApiTests(unittest.TestCase):
         chunks = [json.loads(line[6:]) for line in wire.splitlines() if line.startswith("data: {")]
         calls = [c["choices"][0]["delta"]["tool_calls"] for c in chunks if "tool_calls" in c["choices"][0]["delta"]]
         self.assertEqual(calls[0][0]["index"], 0)
+        self.assertTrue(calls[0][0]["id"].startswith("call_"))
+        self.assertEqual(calls[0][0]["type"], "function")
+        self.assertEqual(calls[0][0]["function"]["name"], "lookup")
+        self.assertIn("query", json.loads(calls[0][0]["function"]["arguments"]))
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_tool_argument_schemas_and_parallel_calls(self):
+        for prompt in ("bad-extra-argument", "bad-missing-argument", "bad-argument-type"):
+            head, wire = self.request(body=self.tools_request(prompt))
+            self.assertIn("502 Bad Gateway", head, prompt)
+            self.assertEqual(json.loads(wire)["error"]["code"], "invalid_tool_output")
+
+        _, wire = self.request(body=self.tools_request("multiple-tools"))
+        self.assertEqual(len(json.loads(wire)["choices"][0]["message"]["tool_calls"]), 2)
+        request = self.tools_request("multiple-tools")
+        request["parallel_tool_calls"] = False
+        head, wire = self.request(body=request)
+        self.assertIn("502 Bad Gateway", head)
+
+    def test_tool_declarations_and_history_fail_closed(self):
+        for mutate in (
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":[5]}),
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":["missing"]}),
+            lambda body: body["tools"][0]["function"]["parameters"].update({"required":["query", "query"]}),
+            lambda body: body["tools"][0]["function"]["parameters"]["properties"]["query"].update({"pattern":"^x"}),
+            lambda body: body["tools"][0]["function"].update({"strict":"yes"}),
+            lambda body: body["tools"].append(body["tools"][0]),
+        ):
+            request = self.tools_request()
+            mutate(request)
+            head, _ = self.request(body=request)
+            self.assertIn("400 Bad Request", head)
+
+        request = self.tools_request()
+        request["messages"] = [{"role":"tool", "tool_call_id":"unmatched", "content":"x"}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
+        request["messages"] = [{"role":"assistant", "tool_calls":[{
+            "id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{}"}}]},
+            {"role":"tool", "tool_call_id":"wrong-id", "content":"x"}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
+        request["messages"] = [{"role":"assistant", "tool_calls":[{
+            "id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":json.dumps({"query":"valid"})}}]}]
+        self.assertIn("400 Bad Request", self.request(body=request)[0])
 
     def test_invalid_requests_and_outputs(self):
         for body, status in [({}, "400"), ({"model":"missing", "messages":[{"role":"user","content":"x"}]}, "404"),
