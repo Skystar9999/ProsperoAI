@@ -93,7 +93,7 @@ set(SPM_NO_THREADLOCAL ON CACHE BOOL "Avoid sentencepiece TLS on PS5" FORCE)
 # consumed (native eboot objects, media test below). The copy into the build
 # tree makes the -include path independent of the checkout layout and fails
 # the configure step early when the header is missing.
-configure_file("${CMAKE_CURRENT_LIST_DIR}/yue2-ggml-compat.hpp"
+configure_file("${CMAKE_CURRENT_LIST_DIR}/../yue2-ggml-compat.hpp"
     "${CMAKE_BINARY_DIR}/yue2-ggml-compat.hpp" COPYONLY)
 add_compile_options("-include${CMAKE_BINARY_DIR}/yue2-ggml-compat.hpp")
 add_subdirectory("${PROS_ROOT}/build/audio-cpp-upstream" audio-cpp)
