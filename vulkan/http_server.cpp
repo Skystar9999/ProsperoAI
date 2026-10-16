@@ -11,16 +11,19 @@
 // does. No runtime module lookup or sceKernelDlsym() is involved.
 
 #include "http_server.hpp"
+#include "debug_log.hpp"
 #include "model_paths.hpp"
 
 #include "gpt_runtime.hpp"
 #include "runtime_settings.hpp"
+#include "model_manager.hpp"
 #include "chatterbox_languages.hpp"
 #include "generated_voice_catalog.hpp"
 #include "runtime_voice_catalog.hpp"
 #include "voice_recorder.hpp"
 #include "session_store.hpp"
 #include "generation_limits.hpp"
+#include "direct_memory.hpp"
 #include "prospero_search.hpp"
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
 #include "model_downloader_ps5.hpp"
@@ -330,6 +333,7 @@ bool run_generation(const gpt_runtime_message_t *messages, unsigned message_coun
                     unsigned ubatch_tokens = 0)
 {
     pthread_mutex_lock(&generation_mutex);
+    std::lock_guard<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex());
     gpt_runtime_settings_t settings{0, max_tokens};
     const auto runtime = prospero_settings::get();
     settings.context_length = runtime.context;
@@ -515,6 +519,7 @@ const char kChatPage[] =
 
 void handle_get_tags(const NetApi &api, int sock)
 {
+    std::lock_guard<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex());
     char body[2048];
     std::snprintf(body, sizeof(body), "{\"models\":[");
     const unsigned count = gpt_runtime_model_count();
@@ -732,6 +737,10 @@ void handle_model_download_cancel(const NetApi &api, int sock)
 
 void handle_model_presets(const NetApi &api, int sock, const char *body = nullptr)
 {
+    // PS5's statfs call is not safe on this title's network worker. Until a supported
+    // storage-query API is available, report unknown rather than risk terminating the app.
+    constexpr bool storage_known = false;
+    constexpr std::uint64_t available_storage = 0;
     if (body)
     {
         const char *value = json_value_start(body, "index");
@@ -742,6 +751,16 @@ void handle_model_presets(const NetApi &api, int sock, const char *body = nullpt
         {
             send_status(api, sock, "400 Bad Request", "application/json",
                         "{\"error\":\"a valid preset index is required\"}");
+            return;
+        }
+        const auto required = prospero_model_download::presets[index].size;
+        if (storage_known && required > available_storage)
+        {
+            send_status(api, sock, "507 Insufficient Storage", "application/json",
+                        nlohmann::json{{"error", "Not enough free space for this model."},
+                                       {"required_bytes", required},
+                                       {"available_bytes", available_storage}}
+                            .dump().c_str());
             return;
         }
         if (!prospero_model_download::download_preset(index))
@@ -761,7 +780,10 @@ void handle_model_presets(const NetApi &api, int sock, const char *body = nullpt
                          {"kind", preset.kind},
                          {"source_filename", preset.kind == 0 ? preset.files[0].source : ""},
                          {"size", preset.size},
-                         {"installed", prospero_model_download::preset_installed(i)}});
+                         {"installed", prospero_model_download::preset_installed(i)},
+                         {"required_bytes", preset.size},
+                         {"available_bytes", storage_known ? available_storage : 0},
+                         {"storage_check_available", storage_known}});
     }
     const auto response = nlohmann::json{{"data", items}}.dump();
     send_json(api, sock, response.c_str());
@@ -1391,9 +1413,27 @@ void handle_model_selection(const NetApi &api, int sock, const char *method,
 {
     if (std::strcmp(method, "GET") == 0)
     {
-        const unsigned selected = gpt_runtime_selected_model();
-        const char *id = gpt_runtime_model_id(selected);
-        const auto response = nlohmann::json{{"id", id ? id : ""}}.dump();
+        const auto state = prospero::model_manager::snapshot();
+        std::string id = state.model_id;
+        if (id.empty())
+        {
+            std::lock_guard<std::mutex> runtime_lock(
+                prospero::model_manager::runtime_mutex());
+            const unsigned selected = gpt_runtime_selected_model();
+            const char *runtime_id = gpt_runtime_model_id(selected);
+            id = runtime_id ? runtime_id : "";
+        }
+        const char *stage = state.stage == prospero::model_manager::Stage::ready ? "ready"
+                            : state.stage == prospero::model_manager::Stage::preparing
+                                ? "preparing"
+                            : state.stage == prospero::model_manager::Stage::failed ? "failed"
+                            : state.stage == prospero::model_manager::Stage::selected
+                                ? "selected"
+                                : "unknown";
+        const auto response = nlohmann::json{{"id", id}, {"state", stage},
+                                              {"error", state.error},
+                                              {"revision", state.revision}}
+                                  .dump();
         send_json(api, sock, response.c_str());
         return;
     }
@@ -1412,31 +1452,29 @@ void handle_model_selection(const NetApi &api, int sock, const char *method,
     }
     const bool prepare = request.value("prepare", true);
     const std::string id = request["id"].get<std::string>();
-    for (unsigned index = 0; index < gpt_runtime_model_count(); ++index)
+    std::string error;
+    if (!prospero::model_manager::select(id.c_str(), prepare, true, &error))
     {
-        const char *candidate = gpt_runtime_model_id(index);
-        if (candidate && id == candidate)
-        {
-            if (!gpt_runtime_select_model(index))
-            {
-                send_status(
-                    api, sock, "409 Conflict", "application/json",
-                    "{\"error\":\"The model cannot be switched while generation is busy.\"}");
-                return;
-            }
-            if (prepare && gpt_runtime_prepare() != 0)
-            {
-                send_status(api, sock, "500 Internal Server Error", "application/json",
-                            "{\"error\":\"The selected model could not be prepared.\"}");
-                return;
-            }
-            const auto response = nlohmann::json{{"id", candidate}, {"preparation_deferred", !prepare}}.dump();
-            send_json(api, sock, response.c_str());
-            return;
-        }
+        prospero::debug::event("api-model-selection-failed", id.c_str(),
+                               error.find("busy") != std::string::npos ? "runtime-busy"
+                                                                       : "selection-failed");
+        const auto response = nlohmann::json{{"error", error}}.dump();
+        const char *status = error.find("not installed") != std::string::npos
+                                 ? "404 Not Found"
+                             : error.find("busy") != std::string::npos
+                                 ? "409 Conflict"
+                                 : "500 Internal Server Error";
+        send_status(api, sock, status, "application/json", response.c_str());
+        return;
     }
-    send_status(api, sock, "404 Not Found", "application/json",
-                "{\"error\":\"Model is not installed.\"}");
+    const auto selected = prospero::model_manager::snapshot();
+    prospero::debug::event(prepare ? "api-model-ready" : "api-model-selected", id.c_str(), "");
+    const char *stage = selected.stage == prospero::model_manager::Stage::ready ? "ready" : "selected";
+    const auto response = nlohmann::json{{"id", id}, {"state", stage},
+                                          {"preparation_deferred", !prepare},
+                                          {"revision", selected.revision}}
+                              .dump();
+    send_json(api, sock, response.c_str());
 }
 
 void handle_model_delete(const NetApi &api, int sock, const char *body)
@@ -1665,6 +1703,42 @@ bool handle_conversations(const NetApi &api, int sock, const char *method, const
                     "{\"error\":\"Invalid conversation ID.\"}");
         return true;
     }
+    if (std::strcmp(method, "PATCH") == 0)
+    {
+        const auto request = nlohmann::json::parse(body, nullptr, false);
+        if (!request.is_object() || !request.contains("title") ||
+            !request["title"].is_string())
+        {
+            send_status(api, sock, "400 Bad Request", "application/json",
+                        "{\"error\":\"A conversation title is required.\"}");
+            return true;
+        }
+        const std::string title = request["title"].get<std::string>();
+        if (title.empty() || title.size() >= sizeof(prospero_session::Record{}.title))
+        {
+            send_status(api, sock, "400 Bad Request", "application/json",
+                        "{\"error\":\"Title must be 1–71 bytes.\"}");
+            return true;
+        }
+        prospero_session::Record record{};
+        std::vector<prospero_session::Message> messages(prospero_session::MessageCapacity);
+        if (!prospero_session::load(id.c_str(), &record, messages.data(),
+                                    static_cast<unsigned>(messages.size())))
+        {
+            send_status(api, sock, "404 Not Found", "application/json",
+                        "{\"error\":\"Conversation not found.\"}");
+            return true;
+        }
+        std::snprintf(record.title, sizeof(record.title), "%s", title.c_str());
+        if (!prospero_session::save(&record, messages.data(), record.message_count))
+        {
+            send_status(api, sock, "500 Internal Server Error", "application/json",
+                        "{\"error\":\"Could not rename the conversation.\"}");
+            return true;
+        }
+        send_json(api, sock, nlohmann::json{{"id", record.id}, {"title", record.title}}.dump().c_str());
+        return true;
+    }
     if (std::strcmp(method, "DELETE") == 0)
     {
         if (!prospero_session::erase(id.c_str()))
@@ -1740,9 +1814,14 @@ void handle_connection(const NetApi &api, int sock)
 #ifdef PS5_LLAMA_VULKAN
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/models/memory") == 0)
     {
+        std::lock_guard<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex());
         char id[256]{}, name[256]{};
         const bool loaded=gpt_runtime_loaded_model(id,sizeof(id),name,sizeof(name));
-        send_json(api,sock,nlohmann::json{{"loaded",loaded},{"id",id},{"name",name}}.dump().c_str());
+        send_json(api,sock,nlohmann::json{{"loaded",loaded},{"id",id},{"name",name},
+            {"vulkan_heap_bytes",gpt_runtime_vulkan_heap_bytes()},
+            {"largest_direct_block_bytes",prospero_memory::largest_free_block()},
+            {"flexible_free_bytes",prospero_memory::flexible_free()},
+            {"estimate_confidence","live-memory-snapshot"}}.dump().c_str());
     }
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/v1/models") == 0)
         handle_openai_models(api, sock);
@@ -1750,6 +1829,31 @@ void handle_connection(const NetApi &api, int sock)
         handle_openai_chat(api, sock, body);
 #endif
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
+    else if (std::strcmp(method, "GET") == 0 &&
+             std::strcmp(path, "/api/diagnostics/events") == 0)
+    {
+        const char *files[] = {"/download0/ProsperoAI/logs/events.jsonl",
+                               "/download0/ProsperoAI/logs/events.prev.jsonl"};
+        nlohmann::json events = nlohmann::json::array();
+        for (const char *file_path : files)
+        {
+            if (std::FILE *file = std::fopen(file_path, "rb"))
+            {
+                char line[512];
+                while (std::fgets(line, sizeof(line), file))
+                {
+                    auto event = nlohmann::json::parse(line, nullptr, false);
+                    if (event.is_object()) events.push_back(std::move(event));
+                }
+                std::fclose(file);
+            }
+        }
+        if (events.size() > 256)
+            events.erase(events.begin(), events.end() - 256);
+        send_json(api, sock, nlohmann::json{{"data", std::move(events)},
+                         {"privacy", "No prompts, responses, API keys, or recordings are stored."}}
+                         .dump().c_str());
+    }
     else if (std::strcmp(method, "GET") == 0 && std::strncmp(path, "/download0/", 11) == 0)
         handle_media_file(api, sock, path);
     else if (std::strncmp(path, "/api/conversations", 18) == 0 &&

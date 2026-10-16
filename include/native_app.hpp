@@ -159,6 +159,7 @@ class App
     std::atomic_flag stream_lock_ = ATOMIC_FLAG_INIT;
     std::atomic<unsigned> stream_version_{0};
     unsigned displayed_stream_ = 0;
+    std::uint64_t model_manager_revision_ = 0;
     std::vector<char> stream_buffer_ = std::vector<char>(prospero_session::MessageBytes);
 #ifdef PROSPERO_HOST
     pthread_t thread_{};

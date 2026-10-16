@@ -11,6 +11,7 @@
 #include <ctime>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
 
 #if __has_include("prospero_build.h")
 #include "prospero_build.h" // written by the build from sce_sys/param.json
@@ -166,6 +167,38 @@ void system_line(const char *text)
         return;
     const std::lock_guard<std::mutex> lock(mutex);
     write("sys", text);
+}
+
+void event(const char *operation, const char *model_id, const char *error_code)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    if (logs_folder.empty())
+        return;
+    const std::string path = logs_folder + "/events.jsonl";
+    struct stat info{};
+    if (::stat(path.c_str(), &info) == 0 && info.st_size > 60 * 1024)
+    {
+        std::rename(path.c_str(), (logs_folder + "/events.prev.jsonl").c_str());
+    }
+    auto safe = [](const char *value) {
+        std::string result;
+        if (!value)
+            return result;
+        for (const unsigned char c : std::string(value))
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')
+                result.push_back(static_cast<char>(c));
+        if (result.size() > 96)
+            result.resize(96);
+        return result;
+    };
+    if (std::FILE *journal = std::fopen(path.c_str(), "ab"))
+    {
+        std::fprintf(journal, "{\"time\":%lld,\"operation\":\"%s\",\"model\":\"%s\",\"error\":\"%s\"}\n",
+                     static_cast<long long>(std::time(nullptr)), safe(operation).c_str(),
+                     safe(model_id).c_str(), safe(error_code).c_str());
+        std::fclose(journal);
+    }
 }
 
 const char *folder()

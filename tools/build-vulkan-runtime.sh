@@ -13,6 +13,10 @@ export CCACHE_DIR=${CCACHE_DIR:-$root/build/ccache}
 export TMPDIR="$root/build/compiler-tmp"
 mkdir -p "$TMPDIR"
 options=(-DPROS_LLAMA_SOURCE="$source_tree" -DPROS_GGML_SOURCE="$ggml_source" -DVulkan_INCLUDE_DIR="$root/.deps/Vulkan-Headers/include" -DGGML_CCACHE=ON)
+if command -v ccache >/dev/null 2>&1; then
+    options+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
 python3 "$root/tools/prepare-bonsai-ggml.py" --ggml-source "$ggml_source" --prism-source "$prism_source"
 python3 "$root/tools/prepare-bonsai-llama.py" --llama-source "$source_tree" --prism-source "$prism_source"
 python3 "$root/tools/prepare-ggml-graph-setter.py" --source "$ggml_source"
@@ -32,6 +36,8 @@ fi
 cmake -S "$root/tools/vulkan-runtime" -B "$build_tree" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release "${options[@]}"
 targets=(llama stable-diffusion kokoro audiocpp)
-[[ $mode != host ]] || targets+=(vulkan-runtime-abi-test vulkan-runtime-media-test)
+if [[ $mode == host ]]; then
+    targets+=(vulkan-runtime-abi-test vulkan-runtime-media-test)
+fi
 cmake --build "$build_tree" --target "${targets[@]}" \
     --parallel "${BUILD_JOBS:-4}"

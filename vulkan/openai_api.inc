@@ -221,6 +221,7 @@ bool api_authorized(const char *request) {
 }
 
 void handle_openai_models(const NetApi &api, int sock) {
+    std::lock_guard<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex());
     gpt_runtime_refresh_models();
     ApiJson data = ApiJson::array();
     for (unsigned i = 0; i < gpt_runtime_model_count(); ++i)
@@ -558,6 +559,11 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
         if (pthread_mutex_trylock(&generation_mutex) != 0)
             throw ApiError("503 Service Unavailable", "server_busy", "Another API generation is running.");
         struct Unlock { ~Unlock() { pthread_mutex_unlock(&generation_mutex); } } unlock;
+        std::unique_lock<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex(),
+                                                  std::try_to_lock);
+        if (!runtime_lock.owns_lock())
+            throw ApiError("503 Service Unavailable", "server_busy",
+                           "The console runtime is busy. Try again when the current operation finishes.");
         unsigned selected = gpt_runtime_model_count();
         for (unsigned i = 0; i < gpt_runtime_model_count(); ++i)
             if (request.model == gpt_runtime_model_id(i)) { selected = i; break; }

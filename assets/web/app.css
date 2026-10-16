@@ -36,3 +36,6 @@ input:not([type=checkbox]):not([type=range]):focus,select:focus,textarea:focus{o
 input[type=search],input[type=password],input[type=text]{-webkit-appearance:none;appearance:none}
 #composer textarea:focus{box-shadow:none}
 #composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 10px 34px #00000028}
+/* Keep keyboard and controller focus visible on every actionable control. */
+:is(button,a,summary,[role=tab],select,input,textarea):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+body.contrast :is(button,a,summary,[role=tab],select,input,textarea):focus-visible{outline-color:currentColor;outline-width:4px}

@@ -92,7 +92,7 @@ let memoryRefreshBusy=false;
 async function refreshMemoryModel(){
  if(memoryRefreshBusy||document.visibilityState==='hidden')return;
  memoryRefreshBusy=true;
- try{const response=await api('/api/models/memory'),state=await response.json();$('memory-model').textContent=state.loaded?`Memory: ${state.name||state.id}`:'Memory: no model loaded';$('memory-model').title=$('memory-model').textContent;if(!state.loaded)preparedModel='';}
+ try{const response=await api('/api/models/memory'),state=await response.json();const free=Number(state.largest_direct_block_bytes||0);const freeText=free?` · largest free block ${(free/1073741824).toFixed(1)} GiB`:'';$('memory-model').textContent=(state.loaded?`Loaded: ${state.name||state.id}`:'Memory: no model loaded')+freeText;$('memory-model').title=`Live memory snapshot. Largest direct-memory block ${(free/1073741824).toFixed(2)} GiB; this is not a model-fit guarantee.`;if(!state.loaded)preparedModel='';}
  catch{$('memory-model').textContent='Memory: unavailable';}
  finally{memoryRefreshBusy=false;}
 }
@@ -134,10 +134,10 @@ function renderModels(){
         const button=document.createElement('button');button.className='glass model-card preset-card';
         const eyebrow=document.createElement('span');eyebrow.className='eyebrow';eyebrow.textContent=kindNames[preset.kind]+' · PRESET';
         const title=document.createElement('strong');title.textContent=preset.name;
-        const size=document.createElement('small');size.textContent=`${(preset.size/1073741824).toFixed(2)} GiB`;
+        const size=document.createElement('small');const enoughSpace=!preset.storage_check_available||Number(preset.available_bytes)>=Number(preset.required_bytes||preset.size);size.textContent=`${(preset.size/1073741824).toFixed(2)} GiB required${preset.storage_check_available?` · ${(preset.available_bytes/1073741824).toFixed(2)} GiB free`:''}`;
         const action=document.createElement('small');action.className='active';
-        action.textContent=downloadState.state==='downloading'&&downloadState.active_preset===preset.index?'Downloading…':'Download preset';
-        button.disabled=busy;button.append(eyebrow,title,size,action);button.onclick=()=>downloadPreset(preset.index);list.append(button);
+        action.textContent=downloadState.state==='downloading'&&downloadState.active_preset===preset.index?'Downloading…':enoughSpace?'Download preset':'Not enough free space';
+        button.disabled=busy||!enoughSpace;button.append(eyebrow,title,size,action);button.onclick=()=>downloadPreset(preset.index);list.append(button);
     }
     $('model-count').textContent=`${shown} shown / ${models.length} installed`;
     if(!shown){const empty=document.createElement('p');empty.className='muted';empty.textContent='No models match. Try another category or search.';list.append(empty);}
@@ -204,11 +204,16 @@ function renderHistory(){
         const row=document.createElement('div');row.className='history-row';
         const open=document.createElement('button');open.textContent=conversation.title||'New conversation';open.classList.toggle('selected',conversation===current);
         open.onclick=()=>{if(controller){$('feedback').textContent='Stop the current response before switching conversations.';return;}current=conversation;currentModelChosen=false;openChat();renderMessages();renderHistory();closeHistory();};
+        const rename=document.createElement('button');rename.type='button';rename.textContent='Rename';rename.setAttribute('aria-label','Rename '+(conversation.title||'conversation'));
+        rename.onclick=async()=>{const title=window.prompt('Conversation name',conversation.title||'New conversation');if(!title?.trim())return;conversation.title=title.trim().slice(0,71);try{if(conversation.id)await api(`/api/conversations/${encodeURIComponent(conversation.id)}`,{method:'PATCH',body:JSON.stringify({title:conversation.title})});save('prospero-conversations',conversations);renderHistory();}catch(error){$('feedback').textContent=error.message;}};
+        const exportButton=document.createElement('button');exportButton.type='button';exportButton.textContent='Export';exportButton.setAttribute('aria-label','Export '+(conversation.title||'conversation'));
+        exportButton.onclick=()=>{const blob=new Blob([JSON.stringify(conversation,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`prospero-${conversation.id||'conversation'}.json`;link.click();URL.revokeObjectURL(url);};
         const remove=document.createElement('button');remove.className='delete-conversation';remove.textContent='×';remove.setAttribute('aria-label','Delete '+(conversation.title||'conversation'));
         remove.onclick=()=>{if(controller&&current===conversation){$('feedback').textContent='Stop the response before deleting this conversation.';return;}pendingDelete=conversation.id;$('delete-dialog').returnValue='';$('delete-description').textContent=conversation.title||'New conversation';$('delete-dialog').showModal();};
-        row.append(open,remove);list.append(row);
+        row.append(open,rename,exportButton,remove);list.append(row);
     }
 }
+$('history-import').onchange=async event=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;if(file.size>2*1024*1024){$('feedback').textContent='Conversation files must be smaller than 2 MiB.';return;}try{const imported=JSON.parse(await file.text());if(!imported||typeof imported!=='object'||typeof imported.id!=='string'||typeof imported.model!=='string'||!Array.isArray(imported.messages))throw Error('This file is not a ProsperoAI conversation export.');const restored={id:imported.id,title:String(imported.title||'Imported conversation').slice(0,71),model:imported.model,modelName:String(imported.modelName||imported.model),purpose:String(imported.purpose||'text-to-text'),messages:imported.messages,createdAt:imported.createdAt||Date.now(),updatedAt:Date.now()};await api('/api/conversations',{method:'POST',body:JSON.stringify(restored)});conversations=conversations.filter(item=>item.id!==restored.id);conversations.unshift(restored);save('prospero-conversations',conversations.slice(0,50));renderHistory();$('feedback').textContent='Conversation imported.';}catch(error){$('feedback').textContent=error.message||'Could not import this conversation.';}};
 async function persistConversation(conversation){
     if(!conversation?.id)return;
     try{
@@ -292,6 +297,7 @@ $('composer').onsubmit=async e=>{e.preventDefault();if(controller){controller.ab
 const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';const event=block=>{const data=block.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trim()).join('\n');if(!data||data==='[DONE]')return;const part=JSON.parse(data);if(part.error)throw Error(part.error.message||'The response could not be completed.');if(part.usage)usage=part.usage;const token=part.choices?.[0]?.delta?.content;if(typeof token==='string'){received=true;answer.content+=token;el.textContent=answer.content;const log=$('messages');if(log.scrollHeight-log.scrollTop-log.clientHeight<180)log.scrollTop=log.scrollHeight;}};while(true){const {value,done}=await reader.read();pending+=decoder.decode(value||new Uint8Array(),{stream:!done}).replace(/\r\n/g,'\n');let split;while((split=pending.indexOf('\n\n'))>=0){event(pending.slice(0,split));pending=pending.slice(split+2);}if(done){if(pending.trim())event(pending);break;}}}
 if(!received)throw Error('The model returned an empty response.');showGenerationStats(el,usage,isTextModel,(performance.now()-start)/1000);$('feedback').textContent=`Completed · ${((performance.now()-start)/1000).toFixed(1)}s`;}catch(error){$('feedback').textContent=error.name==='AbortError'?'Response stopped.':error.message;if(!received)el.remove();}finally{if(answer.content)conversation.messages.push(answer);conversation.updatedAt=Date.now();save('prospero-conversations',conversations.slice(0,50));controller=null;$('send').textContent='↑';$('send').setAttribute('aria-label','Send message');$('prompt').disabled=false;renderHistory();void persistConversation(conversation);}};
 $('access').onclick=()=>{$('key-error').textContent='';$('key-dialog').showModal();};$('key-dialog').addEventListener('close',()=>{if($('key-dialog').returnValue==='connect'){key=$('key').value.trim();try{sessionStorage.setItem('prospero-key',key);}catch{}$('key').value='';refreshModels();}});
+$('export-diagnostics').onclick=async()=>{try{const response=await api('/api/diagnostics/events');const blob=new Blob([JSON.stringify(await response.json(),null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='prosperoai-diagnostics.json';link.click();URL.revokeObjectURL(url);}catch(error){$('feedback').textContent=error.message;}};
 renderHistory();refreshModels();pollDownloads();
 void syncConversations();setInterval(syncConversations,4000);setInterval(refreshSelectedModel,4000);void refreshMemoryModel();setInterval(refreshMemoryModel,2000);
 

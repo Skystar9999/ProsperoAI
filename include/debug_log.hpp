@@ -27,6 +27,8 @@ bool set_enabled(bool on);
 void line(const char *tag, const char *format, ...) __attribute__((format(printf, 2, 3)));
 // A line the app or a runtime printed for the console's own log.
 void system_line(const char *text);
+// Persistent bounded journal. Arguments must be identifiers/codes, never user content.
+void event(const char *operation, const char *model_id, const char *error_code);
 // The logs folder, as the app names it.
 const char *folder();
 } // namespace prospero::debug

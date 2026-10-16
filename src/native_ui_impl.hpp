@@ -174,6 +174,7 @@ struct NativeUI::Impl
     int workspace_sessions_row_ = 3;
     unsigned session_category_ = 0;
     std::string session_query_;
+    std::string workspace_model_query_;
     ui::Keyboard keyboard_;
     ui::Form form_;
     ui::Dialog dialog_;
@@ -211,6 +212,7 @@ struct NativeUI::Impl
     {
         std::uint32_t id;
         float aspect;
+        float last_used;
     };
     std::map<std::string, Texture> images_;
     std::vector<ChatRow> chat_rows_;

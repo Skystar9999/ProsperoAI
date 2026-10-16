@@ -21,6 +21,7 @@
 #include "platform/ps5/system.hpp"
 #ifdef PS5_LLAMA_VULKAN
 #include "gpt_runtime.hpp"
+#include "model_manager.hpp"
 #include "inference_config.hpp"
 #include "runtime_settings.hpp"
 #include "http_server.hpp"
@@ -31,6 +32,7 @@ extern "C" int sceKernelUsleep(std::uint32_t microseconds);
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -294,7 +296,10 @@ int main()
         const auto now = hui::sys::monotonic_us();
 #ifdef PS5_LLAMA_VULKAN
         if (!first_frame)
+        {
+            std::lock_guard<std::mutex> runtime_lock(prospero::model_manager::runtime_mutex());
             gpt_runtime_check_configured_idle_unload();
+        }
 #endif
         const float elapsed = static_cast<float>(now - previous) / 1000000.0f;
         const float dt = std::clamp(elapsed, 0.001f, 0.05f);

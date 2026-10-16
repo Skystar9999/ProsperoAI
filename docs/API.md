@@ -8,8 +8,9 @@ only on a trusted network.
 
 By default, requests do not need an API key. To require one, place `api_key.txt` in the
 deployed app folder and restart the title. Then send `Authorization: Bearer <key>` with
-every request. The web UI does not send this header, so enabling a key also prevents that
-browser UI from connecting.
+every request. The first-party web UI asks for the key after a 401, keeps it in
+tab-scoped `sessionStorage`, and sends it only to the console API. The listener uses plain
+HTTP, so use this only on a trusted local network.
 
 ## OpenAI-compatible API
 
@@ -72,15 +73,16 @@ Invalid settings return `400 Bad Request`; a settings-file write failure returns
 | `GET` | `/api/tags` | List installed models in Ollama-style format. |
 | `POST` | `/api/generate` | Generate from a prompt in Ollama-style format. |
 | `POST` | `/api/chat` | Generate from chat messages in Ollama-style format. |
-| `GET` | `/api/models/memory` | Report the currently loaded model. |
+| `GET` | `/api/models/memory` | Report the loaded model and a live snapshot of available CPU/direct and Vulkan memory. A snapshot is not a guarantee that a model will fit. |
 | `GET`, `POST` | `/api/models/selection` | Read or change the selected model. |
-| `GET`, `POST` | `/api/models/presets` | List curated model presets or start a preset download. |
+| `GET`, `POST` | `/api/models/presets` | List curated model presets with required storage; start a download. The current PS5 build reports free space as unknown and does not claim to preflight it. |
 | `POST` | `/api/models/search` | Search model repositories by query. |
 | `POST` | `/api/models/browse` | Browse downloadable files in a model repository. |
 | `GET`, `POST`, `DELETE` | `/api/models/download` | Check, start, or cancel a model download. |
 | `DELETE` | `/api/models` | Delete an installed model. |
 | `GET`, `POST` | `/api/conversations` | List or create/update a saved conversation. |
-| `GET`, `DELETE` | `/api/conversations/{id}` | Read or remove one saved conversation. |
+| `GET`, `PATCH`, `DELETE` | `/api/conversations/{id}` | Read, rename (`{"title":"..."}`), or remove one saved conversation. |
+| `GET` | `/api/diagnostics/events` | Export the bounded privacy-aware lifecycle and model event journal. |
 | `GET`, `POST` | `/api/voices/chatterbox/custom` | Read or upload the custom Chatterbox voice sample. |
 | `GET`, `POST`, `DELETE` | `/api/voices/chatterbox/recording` | Read or manage a Chatterbox recording session. |
 

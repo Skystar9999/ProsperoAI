@@ -6,6 +6,7 @@
 #include "runtime_settings.hpp"
 #include "prospero_search.hpp"
 #include "generation_limits.hpp"
+#include "model_manager.hpp"
 
 #include "debug_log.hpp"
 #ifdef PS5_LLAMA_VULKAN
@@ -411,6 +412,29 @@ void App::poll()
         if (!start(Job::Preferences))
             preferences_dirty_ = true;
     }
+    if (!running_)
+    {
+        const auto selected = model_manager::snapshot();
+        if (selected.revision != model_manager_revision_)
+        {
+            model_manager_revision_ = selected.revision;
+            const auto found = std::find_if(state_.models.begin(), state_.models.end(),
+                                            [&](const Model &model)
+                                            { return model.id == selected.model_id; });
+            if (found != state_.models.end())
+            {
+                state_.selected_model = static_cast<int>(found - state_.models.begin());
+                state_.preferences.model_id = selected.model_id;
+                state_.ready = selected.stage == model_manager::Stage::ready;
+                state_.status = selected.stage == model_manager::Stage::failed
+                                    ? selected.error
+                                : state_.ready ? found->name + " is ready"
+                                               : found->name + " selected; prepare it to start a new conversation";
+                preferences_dirty_ = true;
+                ++state_.revision;
+            }
+        }
+    }
 }
 
 bool App::generating() const
@@ -673,6 +697,7 @@ void App::work()
     case Job::Discover:
     {
 #ifdef PS5_LLAMA_VULKAN
+        std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
         gpt_runtime_refresh_models();
 #endif
         result_.models.clear();
@@ -699,6 +724,7 @@ void App::work()
     }
     case Job::RefreshModels:
     {
+        std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
         gpt_runtime_refresh_models();
         const std::string selected =
             result_.selected_model >= 0
@@ -725,10 +751,20 @@ void App::work()
         break;
     }
     case Job::Select:
-        result_.ready = gpt_runtime_select_model(argument_) && gpt_runtime_prepare() == 0;
-        result_.selected_model = static_cast<int>(gpt_runtime_selected_model());
-        result_.preferences.model_id =
-            result_.models[static_cast<std::size_t>(result_.selected_model)].id;
+        result_.ready = model_manager::select(
+            result_.models[static_cast<std::size_t>(argument_)].id.c_str(), true);
+        {
+            const auto selected = model_manager::snapshot();
+            result_.selected_model = -1;
+            for (std::size_t i = 0; i < result_.models.size(); ++i)
+                if (result_.models[i].id == selected.model_id)
+                    result_.selected_model = static_cast<int>(i);
+            prospero::debug::event(result_.ready ? "model-ready" : "model-failed",
+                                   selected.model_id.c_str(), result_.ready ? "" : "prepare-failed");
+        }
+        if (result_.selected_model >= 0)
+            result_.preferences.model_id =
+                result_.models[static_cast<std::size_t>(result_.selected_model)].id;
         if (result_.ready)
         {
             result_.session = {};
@@ -744,8 +780,8 @@ void App::work()
             result_.stats_valid = false;
         }
         result_.notice = result_.ready ? Notice::ModelReady : Notice::ModelFailed;
-        result_.status = result_.ready ? "Ready when you are"
-                                       : "Model preparation failed. Select the model to retry.";
+        result_.status = result_.ready ? "Ready when you are" : model_manager::snapshot().error;
+        model_manager_revision_ = model_manager::snapshot().revision;
         break;
     case Job::Open:
     {
@@ -765,11 +801,15 @@ void App::work()
         refresh_images();
         result_.retry_available = false;
         result_.stats_valid = false;
-        result_.ready = index >= 0 && gpt_runtime_select_model(static_cast<unsigned>(index)) &&
-                        gpt_runtime_prepare() == 0;
+        result_.ready = index >= 0 && model_manager::select(record.model_id, true);
+        prospero::debug::event(result_.ready ? "conversation-model-ready" : "conversation-model-failed",
+                               record.model_id, result_.ready ? "" : "prepare-failed");
         if (index >= 0)
         {
-            result_.selected_model = static_cast<int>(gpt_runtime_selected_model());
+            {
+                std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
+                result_.selected_model = static_cast<int>(gpt_runtime_selected_model());
+            }
             result_.preferences.model_id =
                 result_.models[static_cast<std::size_t>(result_.selected_model)].id;
         }
@@ -907,6 +947,7 @@ void App::work()
 
 void App::generate()
 {
+    std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
     const auto &model = result_.models[static_cast<std::size_t>(result_.selected_model)];
     result_.retry_available = true;
     result_.unsaved = true;
