@@ -1022,12 +1022,30 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if ((it.key() == "sd_width" || it.key() == "sd_height") &&
+                     it.value().is_number_unsigned())
+            {
+                const auto dimension = it.value().get<std::uint64_t>();
+                if (dimension <= 768 &&
+                    (dimension == 0 || (dimension >= 256 && dimension % 64 == 0)))
+                {
+                    if (it.key() == "sd_width") p.sd_width = static_cast<unsigned>(dimension);
+                    else p.sd_height = static_cast<unsigned>(dimension);
+                    valid = true;
+                }
+            }
             if (!valid)
             {
                 openai_error(api, sock, "400 Bad Request", "invalid_settings",
                              "Invalid runtime setting.");
                 return;
             }
+        }
+        if (!prospero_settings::valid_sd_dimensions(p.sd_width, p.sd_height))
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_settings",
+                         "Image width and height must both be zero or multiples of 64 from 256 to 768.");
+            return;
         }
         if (!prospero_settings::set_unlocked(p))
         {
@@ -1047,6 +1065,8 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"audio_duration_sec", p.audio_duration_sec},
                        {"audio_seed", p.audio_seed},
                        {"sd_seed", p.sd_seed},
+                       {"sd_width", p.sd_width},
+                       {"sd_height", p.sd_height},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
                        {"chatterbox_language", prospero_language::chatterbox_language(p.chatterbox_language).code},

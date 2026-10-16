@@ -1577,6 +1577,14 @@ void NativeUI::Impl::build_generation_form()
                        runtime.sd_seed == 0 ? "Random" : std::to_string(runtime.sd_seed));
         form_.add_choice(26, "Image seed",
                          {"Keep current", "42", "123", "1234", "2026", "Random"}, 0);
+        std::string image_size = "Model default";
+        if (runtime.sd_width && runtime.sd_height)
+            image_size = std::to_string(runtime.sd_width) + " x " +
+                         std::to_string(runtime.sd_height);
+        form_.add_value(30, "Current image size", image_size);
+        form_.add_choice(31, "Image size",
+                         {"Keep current", "Model default", "512 x 512", "768 x 768",
+                          "512 x 768", "768 x 512"}, 0);
     }
     form_.add_value(9, "Processing", "On this console");
     form_.enter();
@@ -1660,7 +1668,15 @@ void NativeUI::Impl::apply_generation_form()
         const int selected_seed = std::clamp(form_.choice_index(26), 0, 5);
         if (selected_seed != 0)
             runtime.sd_seed = seeds[selected_seed];
-        runtime_changed = runtime_changed || selected_seed != 0;
+        constexpr unsigned widths[] = {0, 0, 512, 768, 512, 768};
+        constexpr unsigned heights[] = {0, 0, 512, 768, 768, 512};
+        const int selected_size = std::clamp(form_.choice_index(31), 0, 5);
+        if (selected_size != 0)
+        {
+            runtime.sd_width = widths[selected_size];
+            runtime.sd_height = heights[selected_size];
+        }
+        runtime_changed = runtime_changed || selected_seed != 0 || selected_size != 0;
     }
     if (runtime_changed && !prospero_settings::set(runtime))
     {

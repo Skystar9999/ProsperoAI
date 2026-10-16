@@ -14,7 +14,7 @@
 #define PROSPERO_SETTINGS_PATH "/download0/prosperoai.cfg"
 #endif
 namespace prospero_settings {
-struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0, audio_seed = 42, sd_seed = 42; };
+struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0, audio_seed = 42, sd_seed = 42, sd_width = 0, sd_height = 0; };
 inline std::mutex mutex;
 inline bool valid_context(unsigned n) {
     return n == 0 || n == 4096 || n == 8192 || n == 16384 || n == 32768 || n == 65536 ||
@@ -28,6 +28,11 @@ inline bool valid_audio_duration_sec(unsigned n) {
 }
 inline bool valid_seed(std::uint64_t n) {
     return n <= std::numeric_limits<unsigned>::max();
+}
+inline bool valid_sd_dimensions(unsigned width, unsigned height) {
+    if (width == 0 && height == 0) return true;
+    return width >= 256 && width <= 768 && height >= 256 && height <= 768 &&
+           width % 64 == 0 && height % 64 == 0;
 }
 inline Runtime read_unlocked() {
     Runtime p;
@@ -45,23 +50,27 @@ inline Runtime read_unlocked() {
             else if (std::sscanf(line, "audio_duration_sec=%u", &v) == 1 && valid_audio_duration_sec(v)) p.audio_duration_sec = v;
             else if (std::sscanf(line, "audio_seed=%llu", &wide) == 1 && valid_seed(wide)) p.audio_seed = static_cast<unsigned>(wide);
             else if (std::sscanf(line, "sd_seed=%llu", &wide) == 1 && valid_seed(wide)) p.sd_seed = static_cast<unsigned>(wide);
+            else if (std::sscanf(line, "sd_width=%u", &v) == 1 && v <= 768 && (v == 0 || (v >= 256 && v % 64 == 0))) p.sd_width = v;
+            else if (std::sscanf(line, "sd_height=%u", &v) == 1 && v <= 768 && (v == 0 || (v >= 256 && v % 64 == 0))) p.sd_height = v;
         }
         std::fclose(f);
     }
+    if (!valid_sd_dimensions(p.sd_width, p.sd_height))
+        p.sd_width = p.sd_height = 0;
     return p;
 }
 inline Runtime get() { std::lock_guard<std::mutex> lock(mutex); return read_unlocked(); }
 inline bool set_unlocked(Runtime p) {
-    if (!valid_context(p.context) || !prospero_generation::valid_output_limit(p.output_limit) || p.kv != 0 || !valid_idle_unload_minutes(p.idle_unload_minutes) || p.kokoro_voice >= 128 || p.chatterbox_voice >= 128 || !prospero_language::valid_chatterbox_language(p.chatterbox_language) || !valid_audio_duration_sec(p.audio_duration_sec)) return false;
+    if (!valid_context(p.context) || !prospero_generation::valid_output_limit(p.output_limit) || p.kv != 0 || !valid_idle_unload_minutes(p.idle_unload_minutes) || p.kokoro_voice >= 128 || p.chatterbox_voice >= 128 || !prospero_language::valid_chatterbox_language(p.chatterbox_language) || !valid_audio_duration_sec(p.audio_duration_sec) || !valid_sd_dimensions(p.sd_width, p.sd_height)) return false;
     std::string contents;
     if (auto *f = std::fopen(PROSPERO_SETTINGS_PATH, "rb")) {
         char line[256];
         while (std::fgets(line, sizeof(line), f))
-            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19) && std::strncmp(line, "audio_seed=", 11) && std::strncmp(line, "sd_seed=", 8)) contents += line;
+            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19) && std::strncmp(line, "audio_seed=", 11) && std::strncmp(line, "sd_seed=", 8) && std::strncmp(line, "sd_width=", 9) && std::strncmp(line, "sd_height=", 10)) contents += line;
         std::fclose(f);
     }
     if (!contents.empty() && contents.back() != '\n') contents += '\n';
-    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\naudio_seed=%u\nsd_seed=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec, p.audio_seed, p.sd_seed);
+    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\naudio_seed=%u\nsd_seed=%u\nsd_width=%u\nsd_height=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec, p.audio_seed, p.sd_seed, p.sd_width, p.sd_height);
     contents += fields;
     auto *f = std::fopen(PROSPERO_SETTINGS_PATH ".tmp", "wb");
     if (!f) return false;

@@ -320,10 +320,12 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
     sd_img_gen_params_init(&parameters);
     parameters.prompt = prompt;
     parameters.negative_prompt = "";
-    parameters.width = (sd3 || flux2_klein) ? 768 : 512;
-    parameters.height = parameters.width;
-    const unsigned configured_seed = prospero_settings::get().sd_seed;
-    parameters.seed = configured_seed == 0 ? -1 : static_cast<std::int64_t>(configured_seed);
+    const auto runtime_settings = prospero_settings::get();
+    const unsigned default_size = (sd3 || flux2_klein) ? 768 : 512;
+    parameters.width = runtime_settings.sd_width ? runtime_settings.sd_width : default_size;
+    parameters.height = runtime_settings.sd_height ? runtime_settings.sd_height : default_size;
+    parameters.seed = runtime_settings.sd_seed == 0 ? -1
+                      : static_cast<std::int64_t>(runtime_settings.sd_seed);
     parameters.batch_count = 1;
     parameters.sample_params.sample_steps = flux2_klein ? 4
                                             : sdxl ? 10

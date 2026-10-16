@@ -30,7 +30,7 @@ Both methods return the complete settings object after the request.
 ```bash
 curl -X POST 'http://<PS5-IP>:11434/api/settings/runtime' \
   -H 'Content-Type: application/json' \
-  -d '{"audio_duration_sec":30,"audio_seed":123,"sd_seed":456}'
+  -d '{"audio_duration_sec":30,"audio_seed":123,"sd_seed":456,"sd_width":512,"sd_height":768}'
 ```
 
 If authentication is enabled, add `-H 'Authorization: Bearer <key>'`.
@@ -45,6 +45,7 @@ If authentication is enabled, add `-H 'Authorization: Bearer <key>'`.
 | `audio_duration_sec` | Integer: `0` to `300`; `0` means each model's default | Requested clip duration for ACE-Step and Stable Audio. The audio planner may clamp it. |
 | `audio_seed` | Unsigned 32-bit integer | Seed used by ACE-Step and Stable Audio. Default is `42`. |
 | `sd_seed` | Unsigned 32-bit integer; `0` requests a random seed | Seed used by image generation models, including Stable Diffusion. Default is `42`. |
+| `sd_width`, `sd_height` | Both `0`, or multiples of `64` from `256` through `768` | Image dimensions for Stable Diffusion based models. Both `0` use the model's default size. Set both in the same request. |
 | `kokoro_voice` | Voice ID string | Default Kokoro voice. |
 | `chatterbox_voice` | Voice ID string | Default Chatterbox voice. |
 | `chatterbox_language` | Language code string | Default Chatterbox language. |

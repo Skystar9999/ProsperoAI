@@ -33,7 +33,10 @@ loaded model cannot serve. The API's `audio_seed` default is 42.
 
 Image generation uses the `sd_seed` runtime setting. Its default is 42; `0` requests a random
 seed. Set it through `POST /api/settings/runtime` or the web workspace. The native Generation
-menu can retain the current seed or choose a common seed value.
+menu can retain the current seed or choose a common seed value. Image size can use the model's
+default or one of the available sizes in the UI. The API accepts paired `sd_width` and `sd_height`
+values that are multiples of 64 from 256 through 768; larger sizes need more memory. Model
+defaults are 512×512 for most models and 768×768 for SD3 and FLUX.2 Klein.
 
 ## Other GGUF text models
 
