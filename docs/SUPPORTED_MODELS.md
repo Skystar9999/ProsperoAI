@@ -37,6 +37,10 @@ menu can retain the current seed or choose a common seed value. Image size can u
 default or one of the available sizes in the UI. The API accepts paired `sd_width` and `sd_height`
 values that are multiples of 64 from 256 through 768; larger sizes need more memory. Model
 defaults are 512×512 for most models and 768×768 for SD3 and FLUX.2 Klein.
+Optionally enable Real-ESRGAN 4× post-processing in the native Generation menu or web settings.
+Place `RealESRGAN_x4plus.pth` in `models/upscalers/` under the configured model root; see the
+[API reference](API.md) for the model download and API setting. Upscaling is off by default and
+runs after releasing the diffusion model from GPU memory.
 
 ## Other GGUF text models
 

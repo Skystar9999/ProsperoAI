@@ -46,6 +46,7 @@ If authentication is enabled, add `-H 'Authorization: Bearer <key>'`.
 | `audio_seed` | Unsigned 32-bit integer | Seed used by ACE-Step and Stable Audio. Default is `42`. |
 | `sd_seed` | Unsigned 32-bit integer; `0` requests a random seed | Seed used by image generation models, including Stable Diffusion. Default is `42`. |
 | `sd_width`, `sd_height` | Both `0`, or multiples of `64` from `256` through `768` | Image dimensions for Stable Diffusion based models. Both `0` use the model's default size. Set both in the same request. |
+| `sd_upscale` | Boolean | Runs optional Real-ESRGAN 4× post-processing. Requires `models/upscalers/RealESRGAN_x4plus.pth`. |
 | `kokoro_voice` | Voice ID string | Default Kokoro voice. |
 | `chatterbox_voice` | Voice ID string | Default Chatterbox voice. |
 | `chatterbox_language` | Language code string | Default Chatterbox language. |
@@ -54,6 +55,12 @@ Audio controls apply to audio-generation models. Image seed applies to image-gen
 models. The web workspace shows each model-specific setting when a matching model is
 selected. The native Generation menu offers the current seed and common seed choices;
 the web UI and API accept any unsigned 32-bit seed.
+
+For Real-ESRGAN, create `models/upscalers/` under the configured model root and place
+[`RealESRGAN_x4plus.pth`](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth)
+there. Upscaling is off by default. It releases the diffusion model from GPU memory before
+loading the upscaler, and processes the image in tiles. If upscaling fails, the original
+generated image is saved.
 
 Invalid settings return `400 Bad Request`; a settings-file write failure returns
 `500 Internal Server Error`. Settings persist in `prosperoai.cfg` across app restarts.

@@ -48,15 +48,15 @@ class HttpApiTests(unittest.TestCase):
     def test_runtime_settings_round_trip(self):
         config = Path(self.scratch.name) / 'runtime.cfg'
         config.write_text('version=2\nstyle=2\ntokens=192\ntheme=1\n')
-        header, body = self.request('/api/settings/runtime', body={'context':'32k', 'kv':'auto', 'thinking':True, 'idle_unload_minutes':2, 'kokoro_voice':'af_bella', 'audio_duration_sec':30, 'audio_seed':123, 'sd_seed':456})
+        header, body = self.request('/api/settings/runtime', body={'context':'32k', 'kv':'auto', 'thinking':True, 'sd_upscale':True, 'idle_unload_minutes':2, 'kokoro_voice':'af_bella', 'audio_duration_sec':30, 'audio_seed':123, 'sd_seed':456})
         self.assertIn('200 OK', header)
         expected = json.loads(body)
-        self.assertEqual({k:expected[k] for k in ('context','kv','thinking','idle_unload_minutes','kokoro_voice','audio_duration_sec','audio_seed','sd_seed')},
-                         {'context':'32k','kv':'auto','thinking':True,'idle_unload_minutes':2,'kokoro_voice':'af_bella','audio_duration_sec':30,'audio_seed':123,'sd_seed':456})
+        self.assertEqual({k:expected[k] for k in ('context','kv','thinking','sd_upscale','idle_unload_minutes','kokoro_voice','audio_duration_sec','audio_seed','sd_seed')},
+                         {'context':'32k','kv':'auto','thinking':True,'sd_upscale':True,'idle_unload_minutes':2,'kokoro_voice':'af_bella','audio_duration_sec':30,'audio_seed':123,'sd_seed':456})
         self.assertEqual(json.loads(body), expected)
         for line in ('style=2','tokens=192','theme=1'):
             self.assertIn(line,config.read_text().splitlines())
-        for line in ('audio_duration_sec=30','audio_seed=123','sd_seed=456'):
+        for line in ('audio_duration_sec=30','audio_seed=123','sd_seed=456','sd_upscale=1'):
             self.assertIn(line,config.read_text().splitlines())
         self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
         header, body = self.request('/api/settings/runtime', body={'context':'256k', 'kv':'auto', 'thinking':True, 'idle_unload_minutes':5})
@@ -64,7 +64,7 @@ class HttpApiTests(unittest.TestCase):
         expected.update(context='256k',kv='auto',thinking=True,idle_unload_minutes=5,kokoro_voice='af_bella')
         self.assertEqual(json.loads(body), expected)
         self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
-        for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'idle_unload_minutes':3}, {'kokoro_voice':'missing'}, {'audio_duration_sec':301}, {'audio_seed':-1}, {'audio_seed':4294967296}, {'sd_seed':-1}, {'sd_seed':4294967296}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
+        for invalid in ({'context':'2k'}, {'kv':'q8_0'}, {'kv':'q2_0'}, {'thinking':'false'}, {'sd_upscale':1}, {'idle_unload_minutes':3}, {'kokoro_voice':'missing'}, {'audio_duration_sec':301}, {'audio_seed':-1}, {'audio_seed':4294967296}, {'sd_seed':-1}, {'sd_seed':4294967296}, {'unknown':1}, {'context':'16k','kv':'bad'}, []):
             self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
             self.assertEqual(json.loads(self.request('/api/settings/runtime')[1]), expected)
         self.assertIn('401 Unauthorized', self.request('/api/settings/runtime', key='secret')[0])

@@ -1585,6 +1585,10 @@ void NativeUI::Impl::build_generation_form()
         form_.add_choice(31, "Image size",
                          {"Keep current", "Model default", "512 x 512", "768 x 768",
                           "512 x 768", "768 x 512"}, 0);
+        form_.add_choice(32, "Image upscaler", {"Off", "Real-ESRGAN 4x"},
+                         runtime.sd_upscale ? 1 : 0);
+        if (runtime.sd_upscale)
+            form_.add_value(33, "Upscaler model path", "models/upscalers/RealESRGAN_x4plus.pth");
     }
     form_.add_value(9, "Processing", "On this console");
     form_.enter();
@@ -1677,6 +1681,8 @@ void NativeUI::Impl::apply_generation_form()
             runtime.sd_height = heights[selected_size];
         }
         runtime_changed = runtime_changed || selected_seed != 0 || selected_size != 0;
+        runtime.sd_upscale = form_.choice_index(32) == 1;
+        runtime_changed = runtime_changed || runtime.sd_upscale != prospero_settings::get().sd_upscale;
     }
     if (runtime_changed && !prospero_settings::set(runtime))
     {

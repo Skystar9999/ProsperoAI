@@ -267,11 +267,11 @@ document.addEventListener('click',e=>{if(e.target.closest('button'))sound();});
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-category]')){const chosen=b===button;b.classList.toggle('selected',chosen);b.setAttribute('aria-selected',String(chosen));$('setting-'+b.dataset.category).hidden=!chosen;}};
 $('preview-send').onclick=()=>{newConversation();$('prompt').value='Tell me a story.';$('prompt').focus();};
 
-let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0,savedAudioSeed=42,savedSdSeed=42,savedSdSize='0,0';
+let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0,savedAudioSeed=42,savedSdSeed=42,savedSdSize='0,0',savedSdUpscale=false;
 let runtimeSettingsQueue=Promise.resolve();
 function runtimeSettings(change){const result=runtimeSettingsQueue.then(()=>applyRuntimeSettings(change));runtimeSettingsQueue=result.catch(()=>{});return result;}
 async function applyRuntimeSettings(change) {
-  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','audio-seed','sd-seed','sd-size','kokoro-voice','workspace-voice'].map($).filter(Boolean);
+  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','audio-seed','sd-seed','sd-size','sd-upscale','kokoro-voice','workspace-voice'].map($).filter(Boolean);
   controls.forEach(el => el.disabled = true);
   try {
     const response = await api('/api/settings/runtime', change ? {method:'POST',body:JSON.stringify(change)} : {});
@@ -288,6 +288,8 @@ async function applyRuntimeSettings(change) {
     if($('sd-seed'))$('sd-seed').value=String(settings.sd_seed??42);
     savedSdSeed=Number(settings.sd_seed??42);
     if($('sd-size')){const size=`${Number(settings.sd_width)||0},${Number(settings.sd_height)||0}`;if(![...$('sd-size').options].some(option=>option.value===size))$('sd-size').add(new Option(`${settings.sd_width} × ${settings.sd_height}`,size));$('sd-size').value=size;savedSdSize=size;}
+    if($('sd-upscale'))$('sd-upscale').checked=Boolean(settings.sd_upscale);
+    savedSdUpscale=Boolean(settings.sd_upscale);
     savedKokoroVoice = settings.kokoro_voice || 'af_heart';
     savedChatterboxVoice = settings.chatterbox_voice || 'cemo';
     savedChatterboxLanguage = settings.chatterbox_language || 'en';
@@ -303,6 +305,7 @@ async function applyRuntimeSettings(change) {
     if(change?.audio_seed!==undefined&&$('audio-seed'))$('audio-seed').value=String(savedAudioSeed);
     if(change?.sd_seed!==undefined&&$('sd-seed'))$('sd-seed').value=String(savedSdSeed);
     if((change?.sd_width!==undefined||change?.sd_height!==undefined)&&$('sd-size'))$('sd-size').value=savedSdSize;
+    if(change?.sd_upscale!==undefined&&$('sd-upscale'))$('sd-upscale').checked=savedSdUpscale;
     if(change?.kokoro_voice && $('kokoro-voice'))$('kokoro-voice').value=savedKokoroVoice;
     if(change?.chatterbox_voice||change?.chatterbox_language)populateWorkspaceVoicePicker(current?.model || selectedModel);
     $('runtime-feedback').textContent = error.message;
@@ -363,11 +366,23 @@ sdSizeHint.textContent='Larger images use more memory. Supported dimensions are 
 $('runtime-feedback').before(sdSizeLabel,sdSizeHint);
 sdSizeLabel.hidden=true;
 sdSizeHint.hidden=true;
-function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const audioVisible=Boolean(model&&modelKind(model)===2),imageVisible=Boolean(model&&modelKind(model)===1);audioDurationLabel.hidden=!audioVisible;audioDurationHint.hidden=!audioVisible;audioSeedLabel.hidden=!audioVisible;audioSeedHint.hidden=!audioVisible;sdSeedLabel.hidden=!imageVisible;sdSeedHint.hidden=!imageVisible;sdSizeLabel.hidden=!imageVisible;sdSizeHint.hidden=!imageVisible;}
+const sdUpscaleLabel=document.createElement('label');
+const sdUpscale=document.createElement('input');
+sdUpscale.id='sd-upscale';
+sdUpscale.type='checkbox';
+sdUpscaleLabel.append(sdUpscale,document.createTextNode(' Upscale image 4× with Real-ESRGAN'));
+const sdUpscaleHint=document.createElement('small');
+sdUpscaleHint.className='muted';
+sdUpscaleHint.textContent='Optional post-processing. Requires RealESRGAN_x4plus.pth in models/upscalers/. Runs after releasing the diffusion model from GPU memory.';
+$('runtime-feedback').before(sdUpscaleLabel,sdUpscaleHint);
+sdUpscaleLabel.hidden=true;
+sdUpscaleHint.hidden=true;
+function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const audioVisible=Boolean(model&&modelKind(model)===2),imageVisible=Boolean(model&&modelKind(model)===1);audioDurationLabel.hidden=!audioVisible;audioDurationHint.hidden=!audioVisible;audioSeedLabel.hidden=!audioVisible;audioSeedHint.hidden=!audioVisible;sdSeedLabel.hidden=!imageVisible;sdSeedHint.hidden=!imageVisible;sdSizeLabel.hidden=!imageVisible;sdSizeHint.hidden=!imageVisible;sdUpscaleLabel.hidden=!imageVisible;sdUpscaleHint.hidden=!imageVisible;}
 audioDuration.onchange=()=>runtimeSettings({audio_duration_sec:Number(audioDuration.value)});
 audioSeed.onchange=()=>{const value=Number(audioSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){audioSeed.value=String(savedAudioSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({audio_seed:value});};
 sdSeed.onchange=()=>{const value=Number(sdSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){sdSeed.value=String(savedSdSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({sd_seed:value});};
 sdSize.onchange=()=>{const [width,height]=sdSize.value.split(',').map(Number);runtimeSettings({sd_width:width,sd_height:height});};
+sdUpscale.onchange=()=>runtimeSettings({sd_upscale:sdUpscale.checked});
 const memoryGroup=document.createElement('div');memoryGroup.className='model-memory-settings';const memoryHeading=document.createElement('h2');memoryHeading.textContent='Model memory';const memoryDescription=document.createElement('p');memoryDescription.className='muted';memoryDescription.textContent='Release the active model after it has been idle.';const idleLabel=document.createElement('label');idleLabel.htmlFor='runtime-idle-unload';idleLabel.textContent='Unload model after';const idleSelect=document.createElement('select');idleSelect.id='runtime-idle-unload';for(const [value,label] of [[1,'1 minute'],[2,'2 minutes'],[5,'5 minutes'],[10,'10 minutes'],[30,'30 minutes'],[60,'60 minutes']]){const option=document.createElement('option');option.value=String(value);option.textContent=label;idleSelect.append(option);}idleLabel.append(idleSelect);memoryGroup.append(memoryHeading,memoryDescription,idleLabel);$('runtime-feedback').before(memoryGroup);
 for (const [id,key] of [['runtime-context','context'],['length','output_limit'],['runtime-thinking','thinking'],['runtime-idle-unload','idle_unload_minutes']]) {
   $(id).onchange = () => runtimeSettings({[key]:['thinking'].includes(key) ? $(id).checked : ['idle_unload_minutes','output_limit'].includes(key) ? Number($(id).value) : $(id).value});

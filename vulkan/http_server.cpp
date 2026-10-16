@@ -968,6 +968,11 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                 p.thinking = it.value().get<bool>();
                 valid = true;
             }
+            else if (it.key() == "sd_upscale" && it.value().is_boolean())
+            {
+                p.sd_upscale = it.value().get<bool>();
+                valid = true;
+            }
             else if (it.key() == "kokoro_voice" && it.value().is_string())
             {
                 const auto voice = it.value().get<std::string>();
@@ -1061,6 +1066,7 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"output_limit", p.output_limit},
                        {"kv", prospero_settings::kv_name(p.kv)},
                        {"thinking", p.thinking},
+                       {"sd_upscale", p.sd_upscale},
                        {"idle_unload_minutes", p.idle_unload_minutes},
                        {"audio_duration_sec", p.audio_duration_sec},
                        {"audio_seed", p.audio_seed},

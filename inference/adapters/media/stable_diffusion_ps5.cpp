@@ -4,6 +4,7 @@
 static_assert(GGML_MAX_NAME == 160, "SD and llama must share the tensor ABI");
 #include "stable-diffusion.h"
 #include "../../../include/generated_output_path.hpp"
+#include "../../../include/model_paths.hpp"
 #include "../../../third_party/miniz/miniz_tdef.h"
 #include "../../../third_party/miniz/miniz.h"
 
@@ -310,6 +311,25 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
     std::remove(oracle_output);
     std::remove(display_output);
     const std::uint64_t start = sceKernelGetProcessTime();
+    const auto runtime_settings = prospero_settings::get();
+    char upscaler_path[512]{};
+    if (runtime_settings.sd_upscale)
+    {
+        if (std::snprintf(upscaler_path, sizeof(upscaler_path), "%s/upscalers/RealESRGAN_x4plus.pth",
+                          prospero::model_root()) >= static_cast<int>(sizeof(upscaler_path)))
+        {
+            std::snprintf(response, response_capacity, "Upscaler path is too long.");
+            return 2;
+        }
+        std::FILE *upscaler_file = std::fopen(upscaler_path, "rb");
+        if (!upscaler_file)
+        {
+            std::snprintf(response, response_capacity,
+                          "Real-ESRGAN model missing. Place RealESRGAN_x4plus.pth in models/upscalers/.");
+            return 2;
+        }
+        std::fclose(upscaler_file);
+    }
     if (!ensure_context(root))
     {
         std::snprintf(response, response_capacity, "Could not load the image model.");
@@ -320,7 +340,6 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
     sd_img_gen_params_init(&parameters);
     parameters.prompt = prompt;
     parameters.negative_prompt = "";
-    const auto runtime_settings = prospero_settings::get();
     const unsigned default_size = (sd3 || flux2_klein) ? 768 : 512;
     parameters.width = runtime_settings.sd_width ? runtime_settings.sd_width : default_size;
     parameters.height = runtime_settings.sd_height ? runtime_settings.sd_height : default_size;
@@ -345,10 +364,33 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
     sd_image_t *images = nullptr;
     int image_count = 0;
     const bool generated = generate_image(context, &parameters, &images, &image_count);
-    const bool written = generated && image_count == 1 && images &&
-                         write_ppm(oracle_output, images[0]) &&
-                         write_tga(display_output, images[0]) &&
-                         write_png(png_output, images[0]);
+    sd_image_t *upscaled_images = nullptr;
+    int upscaled_count = 0;
+    bool upscaled = false;
+    if (generated && image_count == 1 && images && runtime_settings.sd_upscale)
+    {
+        if (progress_callback)
+            progress_callback("Upscaling image 4× with Real-ESRGAN");
+        // Free the diffusion weights before loading ESRGAN to keep the Vulkan memory peak lower.
+        release_context();
+        upscaler_ctx_t *upscaler = new_upscaler_ctx(upscaler_path, false, 1, 128,
+                                                     "CPU,upscaler=Vulkan0", "Vulkan0");
+        if (upscaler)
+        {
+            upscaled = upscale(upscaler, images[0], 4, &upscaled_images, &upscaled_count) &&
+                       upscaled_count == 1 && upscaled_images && upscaled_images[0].data;
+            free_upscaler_ctx(upscaler);
+        }
+        if (!upscaled)
+            log_line("[prosperoai:sd] Real-ESRGAN failed; saving original image\n");
+    }
+    const sd_image_t *output_image = upscaled ? &upscaled_images[0]
+                                               : (images && image_count == 1 ? &images[0] : nullptr);
+    const bool written = generated && output_image &&
+                         write_ppm(oracle_output, *output_image) &&
+                         write_tga(display_output, *output_image) &&
+                         write_png(png_output, *output_image);
+    free_sd_images(upscaled_images, upscaled_count);
     free_sd_images(images, image_count);
     const std::uint64_t elapsed = sceKernelGetProcessTime() - start;
     if (elapsed_microseconds)
@@ -362,7 +404,11 @@ extern "C" int ps5_sd_generate(const char *root, const char *prompt, char *respo
         return 3;
     }
     std::snprintf(response, response_capacity,
-                  "Image generated locally.\nPNG: %s\nPreview: %s", png_output, display_output);
+                  upscaled ? "Image generated and upscaled 4× locally.\nPNG: %s\nPreview: %s"
+                  : runtime_settings.sd_upscale
+                      ? "Image generated locally; ESRGAN failed, saved original size.\nPNG: %s\nPreview: %s"
+                      : "Image generated locally.\nPNG: %s\nPreview: %s",
+                  png_output, display_output);
     sceKernelDebugOutText(0, "[prosperoai] sd_complete=1\n");
     return 0;
 }

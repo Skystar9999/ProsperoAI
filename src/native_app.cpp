@@ -481,10 +481,16 @@ bool App::retry()
 void App::set_preferences(Preferences preferences)
 {
     validate(preferences);
-    if (!prospero_settings::set({preferences.context_length, preferences.output_limit,
-                                 preferences.kv_cache, preferences.thinking,
-                                 preferences.idle_unload_minutes, preferences.kokoro_voice,
-                                 preferences.chatterbox_voice, preferences.chatterbox_language}))
+    auto runtime = prospero_settings::get();
+    runtime.context = preferences.context_length;
+    runtime.output_limit = preferences.output_limit;
+    runtime.kv = preferences.kv_cache;
+    runtime.thinking = preferences.thinking;
+    runtime.idle_unload_minutes = preferences.idle_unload_minutes;
+    runtime.kokoro_voice = preferences.kokoro_voice;
+    runtime.chatterbox_voice = preferences.chatterbox_voice;
+    runtime.chatterbox_language = preferences.chatterbox_language;
+    if (!prospero_settings::set(runtime))
     {
         state_.status = "Could not save runtime settings.";
         return;

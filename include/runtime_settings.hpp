@@ -14,7 +14,7 @@
 #define PROSPERO_SETTINGS_PATH "/download0/prosperoai.cfg"
 #endif
 namespace prospero_settings {
-struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0, audio_seed = 42, sd_seed = 42, sd_width = 0, sd_height = 0; };
+struct Runtime { unsigned context = 0, output_limit = 0, kv = 0; bool thinking = false, sd_upscale = false; unsigned idle_unload_minutes = 5; unsigned kokoro_voice = 0, chatterbox_voice = 0, chatterbox_language = 0; unsigned audio_duration_sec = 0, audio_seed = 42, sd_seed = 42, sd_width = 0, sd_height = 0; };
 inline std::mutex mutex;
 inline bool valid_context(unsigned n) {
     return n == 0 || n == 4096 || n == 8192 || n == 16384 || n == 32768 || n == 65536 ||
@@ -52,6 +52,7 @@ inline Runtime read_unlocked() {
             else if (std::sscanf(line, "sd_seed=%llu", &wide) == 1 && valid_seed(wide)) p.sd_seed = static_cast<unsigned>(wide);
             else if (std::sscanf(line, "sd_width=%u", &v) == 1 && v <= 768 && (v == 0 || (v >= 256 && v % 64 == 0))) p.sd_width = v;
             else if (std::sscanf(line, "sd_height=%u", &v) == 1 && v <= 768 && (v == 0 || (v >= 256 && v % 64 == 0))) p.sd_height = v;
+            else if (std::sscanf(line, "sd_upscale=%u", &v) == 1 && v <= 1) p.sd_upscale = v != 0;
         }
         std::fclose(f);
     }
@@ -66,11 +67,11 @@ inline bool set_unlocked(Runtime p) {
     if (auto *f = std::fopen(PROSPERO_SETTINGS_PATH, "rb")) {
         char line[256];
         while (std::fgets(line, sizeof(line), f))
-            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19) && std::strncmp(line, "audio_seed=", 11) && std::strncmp(line, "sd_seed=", 8) && std::strncmp(line, "sd_width=", 9) && std::strncmp(line, "sd_height=", 10)) contents += line;
+            if (std::strncmp(line, "context=", 8) && std::strncmp(line, "tokens=", 7) && std::strncmp(line, "kv=", 3) && std::strncmp(line, "thinking=", 9) && std::strncmp(line, "idle_unload_minutes=", 20) && std::strncmp(line, "kokoro_voice=", 13) && std::strncmp(line, "chatterbox_voice=", 17) && std::strncmp(line, "chatterbox_language=", 20) && std::strncmp(line, "audio_duration_sec=", 19) && std::strncmp(line, "audio_seed=", 11) && std::strncmp(line, "sd_seed=", 8) && std::strncmp(line, "sd_width=", 9) && std::strncmp(line, "sd_height=", 10) && std::strncmp(line, "sd_upscale=", 11)) contents += line;
         std::fclose(f);
     }
     if (!contents.empty() && contents.back() != '\n') contents += '\n';
-    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\naudio_seed=%u\nsd_seed=%u\nsd_width=%u\nsd_height=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec, p.audio_seed, p.sd_seed, p.sd_width, p.sd_height);
+    char fields[256]; std::snprintf(fields, sizeof(fields), "context=%u\ntokens=%u\nkv=%u\nthinking=%u\nsd_upscale=%u\nidle_unload_minutes=%u\nkokoro_voice=%u\nchatterbox_voice=%u\nchatterbox_language=%u\naudio_duration_sec=%u\naudio_seed=%u\nsd_seed=%u\nsd_width=%u\nsd_height=%u\n", p.context, p.output_limit, p.kv, p.thinking ? 1U : 0U, p.sd_upscale ? 1U : 0U, p.idle_unload_minutes, p.kokoro_voice, p.chatterbox_voice, p.chatterbox_language, p.audio_duration_sec, p.audio_seed, p.sd_seed, p.sd_width, p.sd_height);
     contents += fields;
     auto *f = std::fopen(PROSPERO_SETTINGS_PATH ".tmp", "wb");
     if (!f) return false;
