@@ -1124,7 +1124,11 @@ void App::generate()
     metadata.output_limit = runtime.output_limit;
     metadata.requested_context = runtime.context;
     metadata.thinking = runtime.thinking;
-    metadata.seed = model.capability == Capability::Image ? 42 : -1;
+    metadata.seed = model.capability == Capability::Image
+                        ? (runtime.sd_seed == 0 ? -1 : static_cast<std::int64_t>(runtime.sd_seed))
+                    : model.capability == Capability::Audio
+                        ? static_cast<std::int64_t>(runtime.audio_seed)
+                        : -1;
     bool archived = true;
     if (model.capability == Capability::Text)
     {

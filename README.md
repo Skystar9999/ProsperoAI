@@ -297,8 +297,8 @@ on the PS5 and connect your computer or phone to the same network. Replace
 4. Use **Back to Workspace** to return; conversations can be deleted from their list.
 
 Closing the PS5 app also stops its HTTP server. The API uses plain HTTP and requires
-no key by default; use it on a trusted local network. Optional bearer authentication
-and its effect on the browser interface are explained in [the API guide](docs/OPENCODE.md).
+no key by default; use it on a trusted local network. See the [HTTP API reference](docs/API.md)
+for endpoints and runtime settings, and [OpenCode setup](docs/OPENCODE.md) for client setup.
 
 ### Connect OpenCode to the PS5
 

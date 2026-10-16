@@ -969,6 +969,11 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                 p.thinking = it.value().get<bool>();
                 valid = true;
             }
+            else if (it.key() == "sd_upscale" && it.value().is_boolean())
+            {
+                p.sd_upscale = it.value().get<bool>();
+                valid = true;
+            }
             else if (it.key() == "kokoro_voice" && it.value().is_string())
             {
                 const auto voice = it.value().get<std::string>();
@@ -996,28 +1001,44 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if (it.key() == "audio_duration_sec" && it.value().is_number_unsigned())
+            {
+                const auto seconds = it.value().get<unsigned>();
+                if (prospero_settings::valid_audio_duration_sec(seconds)) { p.audio_duration_sec = seconds; valid = true; }
+            }
+            else if (it.key() == "audio_seed" && it.value().is_number_unsigned())
+            {
+                const auto seed = it.value().get<std::uint64_t>();
+                if (prospero_settings::valid_seed(seed)) { p.audio_seed = static_cast<unsigned>(seed); valid = true; }
+            }
+            else if (it.key() == "sd_seed" && it.value().is_number_unsigned())
+            {
+                const auto seed = it.value().get<std::uint64_t>();
+                if (prospero_settings::valid_seed(seed)) { p.sd_seed = static_cast<unsigned>(seed); valid = true; }
+            }
+            else if ((it.key() == "sd_width" || it.key() == "sd_height") && it.value().is_number_unsigned())
+            {
+                const auto dimension = it.value().get<std::uint64_t>();
+                if (dimension <= 768 && (dimension == 0 || (dimension >= 256 && dimension % 64 == 0)))
+                {
+                    if (it.key() == "sd_width") p.sd_width = static_cast<unsigned>(dimension);
+                    else p.sd_height = static_cast<unsigned>(dimension);
+                    valid = true;
+                }
+            }
             else if (it.key() == "web_search" && it.value().is_boolean())
             {
-                p.web_search = it.value().get<bool>();
-                valid = true;
+                p.web_search = it.value().get<bool>(); valid = true;
             }
             else if (it.key() == "search_scopes" && it.value().is_number_integer())
             {
                 const auto scopes = it.value().get<long long>();
-                if (scopes > 0 && scopes <= prospero_settings::kAllSearchScopes)
-                {
-                    p.search_scopes = static_cast<unsigned>(scopes);
-                    valid = true;
-                }
+                if (scopes > 0 && scopes <= prospero_settings::kAllSearchScopes) { p.search_scopes = static_cast<unsigned>(scopes); valid = true; }
             }
             else if (it.key() == "web_search_timeout" && it.value().is_number_integer())
             {
                 const auto timeout = it.value().get<long long>();
-                if (timeout >= 0 && prospero_settings::valid_web_search_timeout(static_cast<unsigned>(timeout)))
-                {
-                    p.web_search_timeout_seconds = static_cast<unsigned>(timeout);
-                    valid = true;
-                }
+                if (timeout >= 0 && prospero_settings::valid_web_search_timeout(static_cast<unsigned>(timeout))) { p.web_search_timeout_seconds = static_cast<unsigned>(timeout); valid = true; }
             }
             if (!valid)
             {
@@ -1025,6 +1046,12 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                              "Invalid runtime setting.");
                 return;
             }
+        }
+        if (!prospero_settings::valid_sd_dimensions(p.sd_width, p.sd_height))
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_settings",
+                         "Image width and height must both be zero or multiples of 64 from 256 to 768.");
+            return;
         }
         if (!prospero_settings::set_unlocked(p))
         {
@@ -1040,7 +1067,14 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"output_limit", p.output_limit},
                        {"kv", prospero_settings::kv_name(p.kv)},
                        {"thinking", p.thinking},
+                       {"sd_upscale", p.sd_upscale},
                        {"idle_unload_minutes", p.idle_unload_minutes},
+                       {"audio_duration_sec", p.audio_duration_sec},
+                       {"audio_seed", p.audio_seed},
+                       {"sd_seed", p.sd_seed},
+                       {"sd_width", p.sd_width},
+                       {"sd_height", p.sd_height},
+                       {"sd_upscale", p.sd_upscale},
                        {"web_search", p.web_search},
                        {"web_search_timeout", p.web_search_timeout_seconds},
                        {"search_scopes", p.search_scopes},

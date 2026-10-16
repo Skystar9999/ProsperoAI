@@ -3,6 +3,7 @@
 // Stable Audio 3 through audio.cpp's C API and the shared ggml/Vulkan runtime.
 #include "audiocpp.h"
 #include "../../../include/generated_output_path.hpp"
+#include "../../../include/runtime_settings.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -171,10 +172,16 @@ extern "C" int ps5_stable_audio_generate(const char *model_root, const char *pro
             break;
         }
         request = audiocpp_request_create();
+        char duration[16];
+        char seed[16];
+        const auto settings = prospero_settings::get();
+        std::snprintf(duration, sizeof(duration), "%u",
+                      settings.audio_duration_sec ? settings.audio_duration_sec : 4u);
+        std::snprintf(seed, sizeof(seed), "%u", settings.audio_seed);
         if (!request || audiocpp_request_set_text(request, prompt, "en") != AUDIOCPP_OK ||
-            audiocpp_request_set_option(request, "duration_sec", "4") != AUDIOCPP_OK ||
+            audiocpp_request_set_option(request, "duration_sec", duration) != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "num_inference_steps", "8") != AUDIOCPP_OK ||
-            audiocpp_request_set_option(request, "seed", "42") != AUDIOCPP_OK)
+            audiocpp_request_set_option(request, "seed", seed) != AUDIOCPP_OK)
         {
             log_error("request setup failed");
             result_code = 5;

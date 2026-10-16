@@ -1552,6 +1552,53 @@ void NativeUI::Impl::build_generation_form()
         20, "Unload model after",
         {"1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes", "60 minutes"},
         selected_idle);
+    const auto &state = app_.state();
+    const bool audio_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Audio;
+    if (audio_model)
+    {
+        constexpr unsigned durations[] = {0, 8, 16, 30, 60, 120, 300};
+        int selected_duration = 0;
+        for (int i = 0; i < 7; ++i)
+            if (durations[i] == runtime.audio_duration_sec)
+                selected_duration = i + 1;
+        form_.add_value(29, "Current audio duration",
+                        runtime.audio_duration_sec == 0
+                            ? "Model default"
+                            : std::to_string(runtime.audio_duration_sec) + " seconds");
+        form_.add_choice(24, "Audio clip duration",
+                         {"Keep current", "Model default", "8 seconds", "16 seconds", "30 seconds",
+                          "60 seconds", "120 seconds", "300 seconds"},
+                         selected_duration);
+        form_.add_value(27, "Current audio seed", std::to_string(runtime.audio_seed));
+        form_.add_choice(28, "Audio seed", {"Keep current", "42", "123", "1234", "2026", "0"}, 0);
+    }
+    const bool image_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Image;
+    if (image_model)
+    {
+        form_.add_value(25, "Current image seed",
+                        runtime.sd_seed == 0 ? "Random" : std::to_string(runtime.sd_seed));
+        form_.add_choice(26, "Image seed", {"Keep current", "42", "123", "1234", "2026", "Random"},
+                         0);
+        std::string image_size = "Model default";
+        if (runtime.sd_width && runtime.sd_height)
+            image_size =
+                std::to_string(runtime.sd_width) + " x " + std::to_string(runtime.sd_height);
+        form_.add_value(30, "Current image size", image_size);
+        form_.add_choice(
+            31, "Image size",
+            {"Keep current", "Model default", "512 x 512", "768 x 768", "512 x 768", "768 x 512"},
+            0);
+        form_.add_choice(32, "Image upscaler", {"Off", "Real-ESRGAN 4x"},
+                         runtime.sd_upscale ? 1 : 0);
+        if (runtime.sd_upscale)
+            form_.add_value(33, "Upscaler model path", "models/upscalers/RealESRGAN_x4plus.pth");
+    }
     form_.add_value(9, "Processing", "On this console");
     form_.add_choice(22, "Web search", {"Off", "LibreY"}, runtime.web_search ? 1 : 0);
     form_.add_value(23, "Search engine", "Built into ProsperoAI");
@@ -1612,11 +1659,53 @@ void NativeUI::Impl::apply_generation_form()
     p.idle_unload_minutes = idle_minutes[std::clamp(form_.choice_index(20), 0, 5)];
     app_.set_preferences(std::move(p));
     auto runtime = prospero_settings::get();
-    runtime.web_search = form_.choice_index(22) == 1;
-    if (!prospero_settings::set(runtime))
+    const auto &state = app_.state();
+    const bool audio_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Audio;
+    const bool image_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Image;
+    bool runtime_changed = false;
+    if (audio_model)
     {
-        toasts_.push(ui::StatusKind::warning, "Web search not saved",
-                     "Could not save built-in LibreY search settings.");
+        constexpr unsigned durations[] = {0, 0, 8, 16, 30, 60, 120, 300};
+        const int selected_duration = std::clamp(form_.choice_index(24), 0, 7);
+        if (selected_duration != 0)
+            runtime.audio_duration_sec = durations[selected_duration];
+        constexpr unsigned seeds[] = {0, 42, 123, 1234, 2026, 0};
+        const int selected_seed = std::clamp(form_.choice_index(28), 0, 5);
+        if (selected_seed != 0)
+            runtime.audio_seed = seeds[selected_seed];
+        runtime_changed = runtime_changed || selected_duration != 0 || selected_seed != 0;
+    }
+    if (image_model)
+    {
+        constexpr unsigned seeds[] = {0, 42, 123, 1234, 2026, 0};
+        const int selected_seed = std::clamp(form_.choice_index(26), 0, 5);
+        if (selected_seed != 0)
+            runtime.sd_seed = seeds[selected_seed];
+        constexpr unsigned widths[] = {0, 0, 512, 768, 512, 768};
+        constexpr unsigned heights[] = {0, 0, 512, 768, 768, 512};
+        const int selected_size = std::clamp(form_.choice_index(31), 0, 5);
+        if (selected_size != 0)
+        {
+            runtime.sd_width = widths[selected_size];
+            runtime.sd_height = heights[selected_size];
+        }
+        runtime_changed = runtime_changed || selected_seed != 0 || selected_size != 0;
+        runtime.sd_upscale = form_.choice_index(32) == 1;
+        runtime_changed =
+            runtime_changed || runtime.sd_upscale != prospero_settings::get().sd_upscale;
+    }
+    runtime.web_search = form_.choice_index(22) == 1;
+    const bool search_changed = runtime.web_search != prospero_settings::get().web_search;
+    if ((runtime_changed || search_changed) && !prospero_settings::set(runtime))
+    {
+        toasts_.push(ui::StatusKind::warning, "Generation settings not saved",
+                     "Could not save generation settings.");
         build_generation_form();
     }
 }

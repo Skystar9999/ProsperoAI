@@ -266,7 +266,7 @@ $('delete-dialog').addEventListener('close',async()=>{
     renderHistory();
 });
 function updateModelChip(){const chip=$('model-chip'),model=models.find(item=>item.id===current?.model),name=current?.modelName||model?.name||current?.model||'';chip.textContent=name?`Model: ${name}`:'Choose a model';chip.title=name?`This conversation uses ${name}`:'Choose a model for this conversation';chip.hidden=false;}
-function openChat(){page('workspace');$('welcome').hidden=true;$('chat').hidden=false;$('chat-title').textContent=current?.title||'A little room for big ideas.';updateModelChip();modelChooser.value=workspaceModelValue();$('model-load-status').textContent=currentModelChosen?`${current.modelName||current.model} is selected for this conversation.`:current?.model?'Choose this conversation’s model, then start typing to load it.':selectedModel?`${models.find(item=>item.id===selectedModel)?.name||selectedModel} is available. Choose it to use it in this conversation.`:'Choose a model, then start typing to load it.';const model=models.find(item=>item.id===(current?.model||selectedModel)),tts=currentModelChosen&&(current?.purpose==='text-to-speech'||model?.purpose==='text-to-speech');$('workspace-voice-group').hidden=!tts;if(tts){populateWorkspaceVoicePicker(model?.id||current?.model||selectedModel);const chatterbox=String(model?.id||current?.model||selectedModel).includes('chatterbox');$('chatterbox-upload-label').hidden=!chatterbox;void runtimeSettings();if(chatterbox)void refreshCustomChatterboxVoice();}}
+function openChat(){page('workspace');$('welcome').hidden=true;$('chat').hidden=false;$('chat-title').textContent=current?.title||'A little room for big ideas.';updateModelChip();modelChooser.value=workspaceModelValue();$('model-load-status').textContent=currentModelChosen?`${current.modelName||current.model} is selected for this conversation.`:current?.model?'Choose this conversation’s model, then start typing to load it.':selectedModel?`${models.find(item=>item.id===selectedModel)?.name||selectedModel} is available. Choose it to use it in this conversation.`:'Choose a model, then start typing to load it.';const model=models.find(item=>item.id===(current?.model||selectedModel)),tts=currentModelChosen&&(current?.purpose==='text-to-speech'||model?.purpose==='text-to-speech');$('workspace-voice-group').hidden=!tts;syncAudioDurationVisibility();if(tts){populateWorkspaceVoicePicker(model?.id||current?.model||selectedModel);const chatterbox=String(model?.id||current?.model||selectedModel).includes('chatterbox');$('chatterbox-upload-label').hidden=!chatterbox;void runtimeSettings();if(chatterbox)void refreshCustomChatterboxVoice();}}
 $('history-kind').onchange=renderHistory;
 $('history-search').oninput=renderHistory;
 function newConversation(){
@@ -300,10 +300,9 @@ document.addEventListener('click',e=>{if(e.target.closest('button'))sound();});
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-category]')){const chosen=b===button;b.classList.toggle('selected',chosen);b.setAttribute('aria-selected',String(chosen));$('setting-'+b.dataset.category).hidden=!chosen;}};
 $('preview-send').onclick=()=>{newConversation();$('prompt').value='Tell me a story.';$('prompt').focus();};
 
-let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false;
+let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0,savedAudioSeed=42,savedSdSeed=42,savedSdSize='0,0',savedSdUpscale=false;
 let savedWebSearch=false,savedWebSearchTimeout=15,savedSearchScopes=511;
-// The groups of sites a search may ask, in the order of the engine's own scope
-// enum: bit 0 is web, bit 8 is image. The mask travels as search_scopes.
+// Scope bit order follows the search engine: web through image.
 const SEARCH_SCOPES=[['web','General web'],['code','Code hosting'],['video','Video'],['reference','Reference'],['qa','Question sites'],['package','Packages'],['paper','Papers'],['music','Music'],['image','Images']];
 function searchScopeMask(checked){let mask=0;SEARCH_SCOPES.forEach(([id],index)=>{if(checked[id])mask|=1<<index;});return mask;}
 function searchScopeFlags(mask){const flags={};SEARCH_SCOPES.forEach(([id],index)=>{flags[id]=Boolean(mask&(1<<index));});return flags;}
@@ -312,7 +311,7 @@ function currentSearchScopeMask(){const checked={};for(const [id] of SEARCH_SCOP
 let runtimeSettingsQueue=Promise.resolve();
 function runtimeSettings(change){const result=runtimeSettingsQueue.then(()=>applyRuntimeSettings(change));runtimeSettingsQueue=result.catch(()=>{});return result;}
 async function applyRuntimeSettings(change) {
-  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','kokoro-voice','workspace-voice','web-search-enabled','web-search-timeout'].map($).filter(Boolean);
+  const controls = ['runtime-context','length','runtime-thinking','runtime-idle-unload','audio-duration','audio-seed','sd-seed','sd-size','sd-upscale','kokoro-voice','workspace-voice','web-search-enabled','web-search-timeout'].map($).filter(Boolean);
   controls.forEach(el => el.disabled = true);
   try {
     const response = await api('/api/settings/runtime', change ? {method:'POST',body:JSON.stringify(change)} : {});
@@ -322,6 +321,15 @@ async function applyRuntimeSettings(change) {
     $('length').value = String(settings.output_limit ?? 0);
     $('runtime-thinking').checked = settings.thinking;
     $('runtime-idle-unload').value = String(settings.idle_unload_minutes);
+    if($('audio-duration')){const duration=Number(settings.audio_duration_sec)||0;if(duration!==0&&![8,16,30,60,120,300].includes(duration)&&![...$('audio-duration').options].some(option=>Number(option.value)===duration))$('audio-duration').add(new Option(`${duration} seconds`,String(duration)));$('audio-duration').value=String(duration);}
+    savedAudioDuration=Number(settings.audio_duration_sec)||0;
+    if($('audio-seed'))$('audio-seed').value=String(settings.audio_seed??42);
+    savedAudioSeed=Number(settings.audio_seed??42);
+    if($('sd-seed'))$('sd-seed').value=String(settings.sd_seed??42);
+    savedSdSeed=Number(settings.sd_seed??42);
+    if($('sd-size')){const size=`${Number(settings.sd_width)||0},${Number(settings.sd_height)||0}`;if(![...$('sd-size').options].some(option=>option.value===size))$('sd-size').add(new Option(`${settings.sd_width} × ${settings.sd_height}`,size));$('sd-size').value=size;savedSdSize=size;}
+    if($('sd-upscale'))$('sd-upscale').checked=Boolean(settings.sd_upscale);
+    savedSdUpscale=Boolean(settings.sd_upscale);
     if($('web-search-enabled'))$('web-search-enabled').checked=Boolean(settings.web_search);
     if($('web-search-timeout'))$('web-search-timeout').value=String(settings.web_search_timeout||15);
     if(Number.isFinite(Number(settings.search_scopes)))applySearchScopeMask(Number(settings.search_scopes));
@@ -337,6 +345,11 @@ async function applyRuntimeSettings(change) {
     $('runtime-feedback').textContent = '';
     if($('workspace-voice-feedback'))$('workspace-voice-feedback').textContent = '';
   } catch (error) {
+    if(change?.audio_duration_sec!==undefined&&$('audio-duration'))$('audio-duration').value=String(savedAudioDuration);
+    if(change?.audio_seed!==undefined&&$('audio-seed'))$('audio-seed').value=String(savedAudioSeed);
+    if(change?.sd_seed!==undefined&&$('sd-seed'))$('sd-seed').value=String(savedSdSeed);
+    if((change?.sd_width!==undefined||change?.sd_height!==undefined)&&$('sd-size'))$('sd-size').value=savedSdSize;
+    if(change?.sd_upscale!==undefined&&$('sd-upscale'))$('sd-upscale').checked=savedSdUpscale;
     if(change?.web_search&&$('web-search-enabled'))$('web-search-enabled').checked=savedWebSearch;
     if(change?.web_search_timeout&&$('web-search-timeout'))$('web-search-timeout').value=String(savedWebSearchTimeout);
     if(change?.search_scopes)applySearchScopeMask(savedSearchScopes);
@@ -347,6 +360,76 @@ async function applyRuntimeSettings(change) {
   }
   finally { controls.forEach(el => el.disabled = false); }
 }
+const audioDurationLabel=document.createElement('label');
+audioDurationLabel.textContent='Audio clip duration';
+const audioDuration=document.createElement('select');
+audioDuration.id='audio-duration';
+for(const [value,label] of [[0,'Model default'],[8,'8 seconds'],[16,'16 seconds'],[30,'30 seconds'],[60,'60 seconds'],[120,'120 seconds'],[300,'300 seconds']]){
+  const option=document.createElement('option');
+  option.value=String(value);
+  option.textContent=label;
+  audioDuration.append(option);
+}
+audioDurationLabel.append(audioDuration);
+const audioDurationHint=document.createElement('small');
+audioDurationHint.className='muted';
+audioDurationHint.textContent='ACE-Step and Stable Audio. The model may cap the duration.';
+$('runtime-feedback').before(audioDurationLabel,audioDurationHint);
+audioDurationLabel.hidden=true;
+audioDurationHint.hidden=true;
+const audioSeedLabel=document.createElement('label');
+audioSeedLabel.textContent='Audio seed';
+const audioSeed=document.createElement('input');
+audioSeed.id='audio-seed';
+audioSeed.type='number';audioSeed.min='0';audioSeed.max='4294967295';audioSeed.step='1';
+audioSeedLabel.append(audioSeed);
+const audioSeedHint=document.createElement('small');
+audioSeedHint.className='muted';
+audioSeedHint.textContent='Reuse a seed to retry similar audio with the same model and prompt.';
+$('runtime-feedback').before(audioSeedLabel,audioSeedHint);
+audioSeedLabel.hidden=true;
+audioSeedHint.hidden=true;
+const sdSeedLabel=document.createElement('label');
+sdSeedLabel.textContent='Image seed (0 = random)';
+const sdSeed=document.createElement('input');
+sdSeed.id='sd-seed';
+sdSeed.type='number';sdSeed.min='0';sdSeed.max='4294967295';sdSeed.step='1';
+sdSeedLabel.append(sdSeed);
+const sdSeedHint=document.createElement('small');
+sdSeedHint.className='muted';
+sdSeedHint.textContent='Applies to Stable Diffusion and other supported image models.';
+$('runtime-feedback').before(sdSeedLabel,sdSeedHint);
+sdSeedLabel.hidden=true;
+sdSeedHint.hidden=true;
+const sdSizeLabel=document.createElement('label');
+sdSizeLabel.textContent='Image size';
+const sdSize=document.createElement('select');
+sdSize.id='sd-size';
+for(const [value,label] of [['0,0','Model default'],['512,512','512 × 512'],['768,768','768 × 768'],['512,768','512 × 768'],['768,512','768 × 512']]){const option=document.createElement('option');option.value=value;option.textContent=label;sdSize.append(option);}
+sdSizeLabel.append(sdSize);
+const sdSizeHint=document.createElement('small');
+sdSizeHint.className='muted';
+sdSizeHint.textContent='Larger images use more memory. Supported dimensions are multiples of 64 up to 768.';
+$('runtime-feedback').before(sdSizeLabel,sdSizeHint);
+sdSizeLabel.hidden=true;
+sdSizeHint.hidden=true;
+const sdUpscaleLabel=document.createElement('label');
+const sdUpscale=document.createElement('input');
+sdUpscale.id='sd-upscale';
+sdUpscale.type='checkbox';
+sdUpscaleLabel.append(sdUpscale,document.createTextNode(' Upscale image 4× with Real-ESRGAN'));
+const sdUpscaleHint=document.createElement('small');
+sdUpscaleHint.className='muted';
+sdUpscaleHint.textContent='Optional post-processing. Requires RealESRGAN_x4plus.pth in models/upscalers/. Runs after releasing the diffusion model from GPU memory.';
+$('runtime-feedback').before(sdUpscaleLabel,sdUpscaleHint);
+sdUpscaleLabel.hidden=true;
+sdUpscaleHint.hidden=true;
+function syncAudioDurationVisibility(){const model=models.find(item=>item.id===(current?.model||selectedModel));const audioVisible=Boolean(model&&modelKind(model)===2),imageVisible=Boolean(model&&modelKind(model)===1);audioDurationLabel.hidden=!audioVisible;audioDurationHint.hidden=!audioVisible;audioSeedLabel.hidden=!audioVisible;audioSeedHint.hidden=!audioVisible;sdSeedLabel.hidden=!imageVisible;sdSeedHint.hidden=!imageVisible;sdSizeLabel.hidden=!imageVisible;sdSizeHint.hidden=!imageVisible;sdUpscaleLabel.hidden=!imageVisible;sdUpscaleHint.hidden=!imageVisible;}
+audioDuration.onchange=()=>runtimeSettings({audio_duration_sec:Number(audioDuration.value)});
+audioSeed.onchange=()=>{const value=Number(audioSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){audioSeed.value=String(savedAudioSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({audio_seed:value});};
+sdSeed.onchange=()=>{const value=Number(sdSeed.value);if(!Number.isInteger(value)||value<0||value>4294967295){sdSeed.value=String(savedSdSeed);$('runtime-feedback').textContent='Enter a whole seed from 0 to 4294967295.';return;}runtimeSettings({sd_seed:value});};
+sdSize.onchange=()=>{const [width,height]=sdSize.value.split(',').map(Number);runtimeSettings({sd_width:width,sd_height:height});};
+sdUpscale.onchange=()=>runtimeSettings({sd_upscale:sdUpscale.checked});
 const memoryGroup=document.createElement('div');memoryGroup.className='model-memory-settings';const memoryHeading=document.createElement('h2');memoryHeading.textContent='Model memory';const memoryDescription=document.createElement('p');memoryDescription.className='muted';memoryDescription.textContent='Release the active model after it has been idle.';const idleLabel=document.createElement('label');idleLabel.htmlFor='runtime-idle-unload';idleLabel.textContent='Unload model after';const idleSelect=document.createElement('select');idleSelect.id='runtime-idle-unload';for(const [value,label] of [[1,'1 minute'],[2,'2 minutes'],[5,'5 minutes'],[10,'10 minutes'],[30,'30 minutes'],[60,'60 minutes']]){const option=document.createElement('option');option.value=String(value);option.textContent=label;idleSelect.append(option);}idleLabel.append(idleSelect);memoryGroup.append(memoryHeading,memoryDescription,idleLabel);$('runtime-feedback').before(memoryGroup);
 const searchSettings=document.createElement('div');searchSettings.className='model-memory-settings';const searchHeading=document.createElement('h2');searchHeading.textContent='Web search';const searchDescription=document.createElement('p');searchDescription.className='muted';searchDescription.textContent='Use /search followed by a question in a text conversation, and /fetch followed by an address to read one page. The search runs on the console and asks the groups of sites you select below.';const searchToggleLabel=document.createElement('label');searchToggleLabel.className='check';const searchToggle=document.createElement('input');searchToggle.type='checkbox';searchToggle.id='web-search-enabled';searchToggleLabel.append(searchToggle,document.createTextNode('Enable built-in web search'));const timeoutLabel=document.createElement('label');timeoutLabel.htmlFor='web-search-timeout';timeoutLabel.textContent='Search timeout';const timeoutSelect=document.createElement('select');timeoutSelect.id='web-search-timeout';for(const value of [5,10,15,20,30]){const option=document.createElement('option');option.value=String(value);option.textContent=`${value} seconds`;timeoutSelect.append(option);}timeoutLabel.append(timeoutSelect);const testButton=document.createElement('button');testButton.type='button';testButton.className='secondary';testButton.textContent='Test search';const testStatus=document.createElement('small');testStatus.className='muted';testStatus.id='web-search-test-status';const scopeHeading=document.createElement('h3');scopeHeading.textContent='Sites to ask';const scopeHint=document.createElement('p');scopeHint.className='muted';scopeHint.textContent='Fewer groups means a faster search. At least one stays on.';const scopeList=document.createElement('div');scopeList.className='search-scope-list';for(const [id,label] of SEARCH_SCOPES){const scopeLabel=document.createElement('label');scopeLabel.className='check';const box=document.createElement('input');box.type='checkbox';box.id='search-scope-'+id;box.checked=true;scopeLabel.append(box,document.createTextNode(label));scopeList.append(scopeLabel);box.onchange=()=>{const mask=currentSearchScopeMask();if(!mask){box.checked=true;testStatus.textContent='Keep at least one group of sites.';return;}testStatus.textContent='';runtimeSettings({search_scopes:mask});};}
 searchSettings.append(searchHeading,searchDescription,searchToggleLabel,timeoutLabel,scopeHeading,scopeHint,scopeList,testButton,testStatus);$('setting-opencode').append(searchSettings);searchToggle.onchange=()=>runtimeSettings({web_search:searchToggle.checked});timeoutSelect.onchange=()=>runtimeSettings({web_search_timeout:Number(timeoutSelect.value)});testButton.onclick=async()=>{if(!searchToggle.checked){testStatus.textContent='Enable built-in search first.';return;}testButton.disabled=true;testStatus.textContent='Searching…';try{const response=await api('/api/search',{method:'POST',body:JSON.stringify({query:'ProsperoAI PlayStation 5',limit:3})});const result=await response.json();const answered=(result.providers||[]).filter(provider=>provider.outcome==='ok').length;testStatus.textContent=`Search ready · ${result.data?.length||0} results from ${answered} of ${(result.providers||[]).length} providers`;}catch(error){testStatus.textContent=error.message;}finally{testButton.disabled=false;}};

@@ -23,6 +23,28 @@ SHA-256 hashes during download.
 The table is the complete list of curated presets in this build. Curated media presets include
 their required model files and use the image, audio, or speech runtime already in the app.
 
+Music and sound generation uses a default clip length (8 s for ACE-Step, 4 s for Stable Audio 3).
+For supported audio generation models, choose a duration and seed in the native Generation menu
+or the web workspace's Generation settings. The UI offers model default, 8, 16, 30, 60, 120 and
+300 seconds; the web UI and API accept audio seeds from 0 to 4294967295. The
+`audio_duration_sec` runtime setting also accepts 1-300 through `POST /api/settings/runtime` or
+the settings file (`0` restores per-model defaults); audio.cpp's planner may clamp a request the
+loaded model cannot serve. The API's `audio_seed` default is 42.
+Vocal clarity has not been validated for every language. Romanian and other non-English lyrics
+may sound unclear; changing the duration or seed does not guarantee pronunciation or select a
+specific lyric section.
+
+Image generation uses the `sd_seed` runtime setting. Its default is 42; `0` requests a random
+seed. Set it through `POST /api/settings/runtime` or the web workspace. The native Generation
+menu can retain the current seed or choose a common seed value. Image size can use the model's
+default or one of the available sizes in the UI. The API accepts paired `sd_width` and `sd_height`
+values that are multiples of 64 from 256 through 768; larger sizes need more memory. Model
+defaults are 512×512 for most models and 768×768 for SD3 and FLUX.2 Klein.
+Optionally enable Real-ESRGAN 4× post-processing in the native Generation menu or web settings.
+Place `RealESRGAN_x4plus.pth` in `models/upscalers/` under the configured model root; see the
+[API reference](API.md) for the model download and API setting. Upscaling is off by default and
+runs after releasing the diffusion model from GPU memory.
+
 ## Other GGUF text models
 
 ProsperoAI can also download and discover standalone `.gguf` text models. The pinned

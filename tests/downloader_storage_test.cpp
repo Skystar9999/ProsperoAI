@@ -3,13 +3,20 @@
 #include <cassert>
 #include <cstring>
 #include <cerrno>
+#include <mutex>
 #include <pthread.h>
 #include <thread>
+static int (*const real_stat)(const char *, struct stat *) = &stat;
 static int mounted_stat(const char *path, struct stat *result)
 {
-    assert(std::strcmp(path, "/data/prosperoai/models") == 0);
-    result->st_mode = S_IFDIR | 0777;
-    return 0;
+    // The model root answers from memory; anything else (a .part file, a sidecar) is
+    // a plain host file.
+    if (std::strcmp(path, "/data/prosperoai/models") == 0)
+    {
+        result->st_mode = S_IFDIR | 0777;
+        return 0;
+    }
+    return real_stat(path, result);
 }
 static int forbidden_parent_mkdir(const char *, mode_t)
 {
@@ -26,57 +33,70 @@ static int forbidden_parent_mkdir(const char *, mode_t)
 static std::vector<std::string> requested;
 static long answer_status = 200;
 // A stand-in file server: `served` from the requested offset (when ranges are honoured),
-// breaking the connection once `break_at` bytes of the file have been sent.
+// breaking the connection once `break_at` bytes of the file have been sent. Each open
+// session reads its own window, so parallel range threads can share the fixture.
 static std::string served;
-static std::size_t sending = 0, break_at = std::string::npos;
+static std::size_t break_at = std::string::npos;
 static bool honour_range = true;
+// When set, range requests are answered with the partial status that unlocks the
+// parallel path; small fixtures otherwise stay on the sequential fallback.
+static bool answer_206 = false;
+static std::mutex mock_mutex;
 static std::vector<unsigned long long> offsets;
+static std::vector<std::pair<unsigned long long, unsigned long long>> range_requests;
 struct prospero_https
 {
-    int unused;
+    std::size_t pos = 0, end = 0;
 };
 extern "C"
 {
     prospero_https *prospero_https_open(void)
     {
-        static prospero_https session;
-        return &session;
+        return new prospero_https();
     }
-    void prospero_https_close(prospero_https *)
+    void prospero_https_close(prospero_https *session)
     {
+        delete session;
     }
-    int prospero_https_get_from(prospero_https *, const char *url, unsigned long long offset,
+    int prospero_https_get_from(prospero_https *session, const char *url, unsigned long long offset,
                                 long *status)
     {
+        std::lock_guard<std::mutex> guard(mock_mutex);
         requested.emplace_back(url);
         offsets.push_back(offset);
         const bool ranged = offset && honour_range && answer_status == 200;
         *status = ranged ? 206 : answer_status;
-        sending = ranged ? offset : 0;
+        session->pos = ranged ? static_cast<std::size_t>(offset) : 0;
+        session->end = served.size();
         return 0;
     }
-    int prospero_https_get_range(prospero_https *, const char *url, unsigned long long first,
+    int prospero_https_get_range(prospero_https *session, const char *url, unsigned long long first,
                                  unsigned long long last, long *status)
     {
+        std::lock_guard<std::mutex> guard(mock_mutex);
         requested.emplace_back(url);
         offsets.push_back(first);
+        range_requests.emplace_back(first, last);
         if (last < first)
             return 1;
-        sending = static_cast<std::size_t>(first);
-        *status = 200; // Small host fixtures stay on the sequential fallback path.
+        session->pos = static_cast<std::size_t>(first);
+        session->end = static_cast<std::size_t>(last) + 1;
+        *status = answer_206 ? 206 : 200;
         return 0;
     }
-    int prospero_https_read(prospero_https *, void *buffer, std::size_t size)
+    int prospero_https_read(prospero_https *session, void *buffer, std::size_t size)
     {
-        if (sending >= served.size())
+        std::lock_guard<std::mutex> guard(mock_mutex);
+        if (session->pos >= session->end || session->pos >= served.size())
             return 0;
-        if (sending >= break_at)
+        if (session->pos >= break_at)
             return -1;
-        std::size_t count = std::min({size, served.size() - sending, std::size_t{7}});
+        std::size_t count = std::min(
+            {size, session->end - session->pos, served.size() - session->pos, std::size_t{7}});
         if (break_at != std::string::npos)
-            count = std::min(count, break_at - sending);
-        std::memcpy(buffer, served.data() + sending, count);
-        sending += count;
+            count = std::min(count, break_at - session->pos);
+        std::memcpy(buffer, served.data() + session->pos, count);
+        session->pos += count;
         return static_cast<int>(count);
     }
     const char *prospero_https_error(const prospero_https *)
@@ -244,5 +264,48 @@ int main()
         !fetch_verified(session, "https://huggingface.co/a", part, served.size(), digest, 0, "a"));
     assert(access(part.c_str(), F_OK) != 0);
     cancel_requested.store(false);
+    // An interrupted parallel download resumes from the bytes already on disk, not
+    // from zero: a stop between two range boundaries used to restart the whole file.
+    answer_206 = true;
+    served.assign(4096, '\0');
+    for (std::size_t i = 0; i < served.size(); ++i)
+        served[i] = static_cast<char>(i * 31 + 7);
+    Sha256 parallel_hash;
+    parallel_hash.update(served.data(), served.size());
+    const std::string parallel_digest = parallel_hash.finish();
+    const std::string ppart = std::string(folder) + "/parallel.gguf.part";
+    break_at = 1400; // chunk is 256: whole ranges below the break plus one partial range
+    current.store(State::Downloading);
+    assert(!fetch_verified(session, "https://huggingface.co/p", ppart, served.size(),
+                           parallel_digest, 0, "p"));
+    struct stat part_info
+    {
+    };
+    assert(real_stat(ppart.c_str(), &part_info) == 0 &&
+           static_cast<std::uint64_t>(part_info.st_size) == served.size());
+    assert(access((ppart + ".ranges").c_str(), F_OK) == 0);
+    assert(std::strstr(current_status, "Bytes received are saved") != nullptr);
+    break_at = std::string::npos;
+    range_requests.clear();
+    assert(fetch_verified(session, "https://huggingface.co/p", ppart, served.size(),
+                          parallel_digest, 0, "p"));
+    unsigned long long asked = 0;
+    for (const auto &[first, last] : range_requests)
+        asked += last - first + 1;
+    // The resume asked for less than the whole file: the partial range stayed on disk.
+    assert(asked > 0 && asked < served.size());
+    std::string written_back;
+    if (std::FILE *file = std::fopen(ppart.c_str(), "rb"))
+    {
+        char chunk[64];
+        while (std::size_t n = std::fread(chunk, 1, sizeof(chunk), file))
+            written_back.append(chunk, n);
+        std::fclose(file);
+    }
+    assert(written_back == served);
+    assert(access((ppart + ".ranges").c_str(), F_OK) != 0);
+    assert(completed_bytes.load() == served.size());
+    std::remove(ppart.c_str());
+    answer_206 = false;
     rmdir(folder);
 }

@@ -13,6 +13,7 @@ class DownloaderStorageTests(unittest.TestCase):
             binary = Path(directory) / "storage"
             subprocess.run([
                 os.environ.get("HOST_CXX", "clang++"), "-std=c++20", "-O2",
+                "-DPROSPERO_TEST_MIN_PARALLEL_BYTES=256",
                 "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
                 "-I" + str(ROOT / "include"), "-I" + str(ROOT / ".deps/llama.cpp/vendor"), str(ROOT / "tests/downloader_storage_test.cpp"),
                 "-o", str(binary),
