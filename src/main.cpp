@@ -241,6 +241,12 @@ int main()
 #endif
     // The debug log's switch is read here, before anything else can go wrong.
     prospero::debug::start("/download0/ProsperoAI/logs");
+    constexpr const char *run_marker = "/download0/ProsperoAI/logs/app-running";
+    if (access(run_marker, F_OK) == 0)
+        prospero::debug::event("previous-run-unclean", "", "unclean-exit");
+    if (std::FILE *marker = std::fopen(run_marker, "wb"))
+        std::fclose(marker);
+    prospero::debug::event("app-start", "", "");
 #ifdef PS5_LLAMA_VULKAN
     configure_vulkan_tuning_profile();
 #endif
@@ -382,6 +388,8 @@ int main()
     }
     gpt_ime_shutdown();
     app.shutdown();
+    prospero::debug::event("app-stop", "", "");
+    std::remove(run_marker);
     prospero_media_attach(nullptr);
     gpt_input_shutdown();
     audio.stop();

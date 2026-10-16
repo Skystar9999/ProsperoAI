@@ -33,8 +33,21 @@ if [[ $mode == ps5 ]]; then
         -DGGML_AVX512=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
         -DSPIRV-Headers_DIR=/usr/share/cmake/SPIRV-Headers -U CMAKE_CXX_FLAGS)
 fi
-cmake -S "$root/tools/vulkan-runtime" -B "$build_tree" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release "${options[@]}"
+config_signature=$(printf '%s\n' "$mode" "${options[@]}" | sha256sum | cut -d ' ' -f 1)
+config_stamp="$build_tree/.prospero-cmake-options"
+configure_cmake=0
+if [[ ! -f "$build_tree/CMakeCache.txt" || ! -f "$config_stamp" ]]; then
+    configure_cmake=1
+elif [[ $(cat "$config_stamp") != "$config_signature" ]]; then
+    configure_cmake=1
+fi
+if (( configure_cmake )); then
+    cmake -S "$root/tools/vulkan-runtime" -B "$build_tree" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release "${options[@]}"
+    printf '%s\n' "$config_signature" > "$config_stamp"
+else
+    echo "CMake configure options unchanged; Ninja will check source dependencies"
+fi
 targets=(llama stable-diffusion kokoro audiocpp)
 if [[ $mode == host ]]; then
     targets+=(vulkan-runtime-abi-test vulkan-runtime-media-test)

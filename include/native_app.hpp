@@ -79,7 +79,8 @@ struct State
     prospero_session::Record session{};
     Preferences preferences;
     int selected_model = -1;
-    bool ready = false, initialized = false, retry_available = false, unsaved = false;
+    bool ready = false, preparing = false, initialized = false, retry_available = false,
+         unsaved = false;
     std::string status = "Opening your space...", stream;
     // Figures of the last answer in the conversation on screen; see stats_valid.
     gpt_runtime_stats_t stats{};

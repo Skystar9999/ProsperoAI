@@ -175,6 +175,7 @@ struct NativeUI::Impl
     unsigned session_category_ = 0;
     std::string session_query_;
     std::string workspace_model_query_;
+    int workspace_model_filter_ = -1; // -1 = all capabilities; otherwise Capability ordinal.
     ui::Keyboard keyboard_;
     ui::Form form_;
     ui::Dialog dialog_;

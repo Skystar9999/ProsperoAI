@@ -7,6 +7,9 @@
 #include "prospero_search.hpp"
 #include "generation_limits.hpp"
 #include "model_manager.hpp"
+#ifdef PS5_LLAMA_VULKAN
+#include "direct_memory.hpp"
+#endif
 
 #include "debug_log.hpp"
 #ifdef PS5_LLAMA_VULKAN
@@ -426,10 +429,12 @@ void App::poll()
                 state_.selected_model = static_cast<int>(found - state_.models.begin());
                 state_.preferences.model_id = selected.model_id;
                 state_.ready = selected.stage == model_manager::Stage::ready;
+                state_.preparing = selected.stage == model_manager::Stage::preparing;
                 state_.status = selected.stage == model_manager::Stage::failed
                                     ? selected.error
                                 : state_.ready ? found->name + " is ready"
-                                               : found->name + " selected; prepare it to start a new conversation";
+                                : state_.preparing ? found->name + " is loading…"
+                                                   : found->name + " selected; prepare it to start a new conversation";
                 preferences_dirty_ = true;
                 ++state_.revision;
             }
@@ -478,9 +483,20 @@ bool App::select_model(unsigned index)
 {
     if (running_ || state_.unsaved || index >= state_.models.size())
         return false;
+    const int previous_model = state_.selected_model;
+    const bool previous_ready = state_.ready;
     argument_ = index;
+    state_.selected_model = static_cast<int>(index);
+    state_.ready = false;
+    state_.preparing = true;
     state_.status = "Preparing " + state_.models[index].name + "...";
-    return start(Job::Select);
+    if (start(Job::Select))
+        return true;
+    state_.selected_model = previous_model;
+    state_.ready = previous_ready;
+    state_.preparing = false;
+    state_.status = "Could not start model preparation. Try again.";
+    return false;
 }
 
 bool App::open_session(unsigned index)
@@ -753,6 +769,7 @@ void App::work()
     case Job::Select:
         result_.ready = model_manager::select(
             result_.models[static_cast<std::size_t>(argument_)].id.c_str(), true);
+        result_.preparing = false;
         {
             const auto selected = model_manager::snapshot();
             result_.selected_model = -1;
@@ -761,6 +778,20 @@ void App::work()
                     result_.selected_model = static_cast<int>(i);
             prospero::debug::event(result_.ready ? "model-ready" : "model-failed",
                                    selected.model_id.c_str(), result_.ready ? "" : "prepare-failed");
+#ifdef PS5_LLAMA_VULKAN
+            if (result_.ready)
+            {
+                const auto settings = prospero_settings::get();
+                std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
+                char loaded[384]{};
+                if (gpt_runtime_loaded_model(loaded, sizeof(loaded), nullptr, 0) &&
+                    selected.model_id == loaded)
+                    prospero::debug::model_memory_sample(
+                        selected.model_id.c_str(), settings.context, settings.output_limit,
+                        settings.thinking, gpt_runtime_vulkan_heap_bytes(),
+                        prospero_memory::flexible_free());
+            }
+#endif
         }
         if (result_.selected_model >= 0)
             result_.preferences.model_id =
@@ -804,6 +835,19 @@ void App::work()
         result_.ready = index >= 0 && model_manager::select(record.model_id, true);
         prospero::debug::event(result_.ready ? "conversation-model-ready" : "conversation-model-failed",
                                record.model_id, result_.ready ? "" : "prepare-failed");
+#ifdef PS5_LLAMA_VULKAN
+        if (result_.ready)
+        {
+            const auto settings = prospero_settings::get();
+            std::lock_guard<std::mutex> runtime_lock(model_manager::runtime_mutex());
+            char loaded[384]{};
+            if (gpt_runtime_loaded_model(loaded, sizeof(loaded), nullptr, 0) &&
+                std::strcmp(record.model_id, loaded) == 0)
+                prospero::debug::model_memory_sample(
+                    record.model_id, settings.context, settings.output_limit, settings.thinking,
+                    gpt_runtime_vulkan_heap_bytes(), prospero_memory::flexible_free());
+        }
+#endif
         if (index >= 0)
         {
             {
@@ -842,6 +886,9 @@ void App::work()
         break;
     case Job::Generate:
         generate();
+        prospero::debug::event(result_.stats_valid ? "generation-completed" : "generation-failed",
+                               result_.session.model_id,
+                               result_.stats_valid ? "" : "runtime-or-save-failed");
         break;
     case Job::Save:
         result_.unsaved = !prospero_session::save(&result_.session, result_.messages.data(),

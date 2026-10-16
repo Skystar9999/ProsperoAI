@@ -51,8 +51,26 @@ enum DialogAction
     kDeleteModel,
     kCloseApp,
     kCancelDownload,
+    kDownloadPreset,
     kDeleteVoice
 };
+
+std::string model_memory_note(const std::string &model_id)
+{
+    const auto summary = debug::model_memory_summary(model_id.c_str());
+    if (!summary.samples)
+        return "No successful memory measurement exists for this model yet. A safe fit estimate "
+               "is unavailable.";
+    char note[320];
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    std::snprintf(note, sizeof(note),
+                  "%u past successful load(s). Largest observed Vulkan heap: %.2f GiB. "
+                  "Lowest remaining flexible memory: %.2f GiB. Past runs do not guarantee "
+                  "this model will fit now.",
+                  summary.samples, summary.largest_vulkan_heap_bytes / gib,
+                  summary.least_flexible_free_bytes / gib);
+    return note;
+}
 } // namespace
 
 NativeUI::Impl::Impl(NativeUI &owner, App &app, FontSet &font_set, gfx::Renderer &renderer)
@@ -658,6 +676,15 @@ void NativeUI::Impl::update(const InputFrame &input, float dt, ui::Feedback &fee
                 accepted = quit_ = !app_.busy() && !app_.state().unsaved;
             else if (dialog_action_ == kCancelDownload)
                 accepted = cancel_pending_ = prospero_model_download::cancel();
+            else if (dialog_action_ == kDownloadPreset && dialog_index_ >= 0 &&
+                     static_cast<std::size_t>(dialog_index_) < prospero_model_download::preset_count)
+            {
+                const auto &preset = prospero_model_download::presets[dialog_index_];
+                accepted = prospero_model_download::download_preset(
+                    static_cast<std::size_t>(dialog_index_));
+                if (accepted)
+                    toasts_.push(ui::StatusKind::info, "Downloading model", preset.name);
+            }
             else if (dialog_action_ == kDeleteVoice)
             {
                 auto preferences = app_.state().preferences;
@@ -702,8 +729,16 @@ void NativeUI::Impl::update(const InputFrame &input, float dt, ui::Feedback &fee
     }
     else if (input.is_pressed(Action::page_next) || input.is_pressed(Action::page_prev))
     {
-        if (tabs_.step(input.is_pressed(Action::page_next) ? 1 : -1, input, feedback) ==
-            ui::Event::changed)
+        if (conversation_ && selecting_model_ && rail_)
+        {
+            const int delta = input.is_pressed(Action::page_next) ? 1 : -1;
+            workspace_model_filter_ = (workspace_model_filter_ + 1 + delta + 5) % 5 - 1;
+            sessions_.set_focus(0);
+            refresh_sessions();
+            feedback.play(audio::Cue::focus);
+        }
+        else if (tabs_.step(input.is_pressed(Action::page_next) ? 1 : -1, input, feedback) ==
+                 ui::Event::changed)
             change_page(tabs_.active());
     }
     else if (tabs_.active() == 1)
@@ -889,14 +924,17 @@ void NativeUI::Impl::handle_models(const InputFrame &input, ui::Feedback &feedba
                 toasts_.push(ui::StatusKind::info, "Model bundle saved",
                              "The model is installed in your library.");
             }
-            else if (prospero_model_download::download_preset(preset_index))
-            {
-                feedback.play(audio::Cue::tab);
-                toasts_.push(ui::StatusKind::info, "Downloading model",
-                             prospero_model_download::presets[preset_index].name);
-            }
             else
-                feedback.play(audio::Cue::error);
+            {
+                const auto &preset = prospero_model_download::presets[preset_index];
+                const auto size_mib = static_cast<unsigned long long>(
+                    preset.size / (1024ULL * 1024ULL));
+                open_dialog(kDownloadPreset, static_cast<int>(preset_index), "Download this model?",
+                            std::string(preset.name) + " requires " + std::to_string(size_mib) +
+                                " MiB. Free console storage cannot be checked safely. Check that "
+                                "enough space is available before continuing.",
+                            "Download model", false, feedback);
+            }
             return;
         }
         if (app_.busy() || state.unsaved)
@@ -911,7 +949,8 @@ void NativeUI::Impl::handle_models(const InputFrame &input, ui::Feedback &feedba
             open_dialog(kUseModel, index,
                         "Use " + state.models[static_cast<std::size_t>(index)].name + "?",
                         "Your current conversation is kept. A new conversation starts with "
-                        "this model.",
+                        "this model. " + model_memory_note(
+                            state.models[static_cast<std::size_t>(index)].id),
                         "Use model", false, feedback);
     }
 }
@@ -1082,7 +1121,8 @@ void NativeUI::Impl::handle_workspace(const InputFrame &input, ui::Feedback &fee
                         workspace_model_indices_[static_cast<std::size_t>(sessions_.focus())];
                     const auto &model = app_.state().models[index];
                     open_dialog(kUseModel, static_cast<int>(index), "Use " + model.name + "?",
-                                "This model will load into memory for the new conversation.",
+                                "This model will load into memory for the new conversation. " +
+                                    model_memory_note(model.id),
                                 "Use model", false, feedback);
                 }
                 else
@@ -1243,6 +1283,9 @@ void NativeUI::Impl::refresh_sessions()
         for (unsigned i = 0; i < state.models.size(); ++i)
         {
             const auto &model = state.models[i];
+            if (workspace_model_filter_ >= 0 &&
+                static_cast<int>(model.capability) != workspace_model_filter_)
+                continue;
             std::string searchable = model.name + " " + model.id + " " + model.purpose;
             std::transform(searchable.begin(), searchable.end(), searchable.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1254,7 +1297,9 @@ void NativeUI::Impl::refresh_sessions()
             const bool selected = static_cast<int>(i) == state.selected_model;
             item.subtitle =
                 std::string(kCapabilityNames[static_cast<unsigned>(model.capability)]) +
-                (selected ? (state.ready ? " · Ready" : " · Selected, not prepared")
+                (selected ? (state.ready ? " · Ready"
+                                  : state.preparing ? " · Loading…"
+                                                    : " · Selected, not prepared")
                           : " · Select to load");
             rows.push_back(std::move(item));
             workspace_model_indices_.push_back(i);
@@ -1371,6 +1416,7 @@ void NativeUI::Impl::begin_model_selection()
 {
     selecting_model_ = true;
     workspace_model_query_.clear();
+    workspace_model_filter_ = -1;
     conversation_ = true;
     rail_ = true;
     sessions_.set_focus(0);
@@ -1555,8 +1601,14 @@ void NativeUI::Impl::build_generation_form()
 {
     const auto p = app_.state().preferences;
     const auto runtime = prospero_settings::get();
+    const auto &state = app_.state();
+    const Capability capability = state.selected_model >= 0
+        ? state.models[static_cast<std::size_t>(state.selected_model)].capability
+        : Capability::Text;
     form_.clear();
     form_.set_bounds({536, 262, 1288, 676});
+    if (capability == Capability::Text)
+    {
     form_.add_header("Text responses");
     auto &style_field = form_.add_choice(6, "Response style", {"Balanced", "Precise", "Creative"},
                                          static_cast<int>(p.style));
@@ -1579,6 +1631,7 @@ void NativeUI::Impl::build_generation_form()
                                        : 12);
     length_field.description =
         "Auto uses the available context. Larger limits can take longer and use more memory.";
+    form_.add_header("Advanced text settings");
     constexpr unsigned contexts[] = {0, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
     int selected_context = 0;
     for (int i = 0; i < 8; ++i)
@@ -1591,7 +1644,9 @@ void NativeUI::Impl::build_generation_form()
     auto &thinking_field = form_.add_toggle(19, "Thinking", runtime.thinking);
     thinking_field.description =
         "Allow supported text models to spend extra tokens reasoning before answering.";
-    form_.add_value(21, "Model memory", "Release the runtime when idle.");
+    }
+    form_.add_header("Model memory");
+    form_.add_value(21, "Memory use", "Unload the selected model after it has been idle.");
     constexpr unsigned idle_minutes[] = {1, 2, 5, 10, 30, 60};
     int selected_idle = 1;
     for (int i = 0; i < 6; ++i)
@@ -1603,7 +1658,6 @@ void NativeUI::Impl::build_generation_form()
         selected_idle);
     unload_field.description =
         "Free model memory after this idle time. The next request will load the model again.";
-    const auto &state = app_.state();
     const bool audio_model =
         state.selected_model >= 0 &&
         state.models[static_cast<std::size_t>(state.selected_model)].capability ==
@@ -1716,19 +1770,25 @@ void NativeUI::Impl::apply_form()
 void NativeUI::Impl::apply_generation_form()
 {
     auto p = app_.state().preferences;
-    p.style = static_cast<unsigned>(form_.choice_index(6));
-    constexpr unsigned limits[] = {0,    64,   128,  192,   256,   512,   1024,
-                                   2048, 4096, 8192, 16384, 32768, 65536, 131072};
-    p.output_limit = limits[std::clamp(form_.choice_index(7), 0, 13)];
-    constexpr unsigned contexts[] = {0, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
-    p.context_length = contexts[std::clamp(form_.choice_index(17), 0, 7)];
-    p.kv_cache = 0;
-    p.thinking = form_.toggle_value(19);
+    const auto &state = app_.state();
+    const Capability capability = state.selected_model >= 0
+        ? state.models[static_cast<std::size_t>(state.selected_model)].capability
+        : Capability::Text;
+    if (capability == Capability::Text)
+    {
+        p.style = static_cast<unsigned>(form_.choice_index(6));
+        constexpr unsigned limits[] = {0,    64,   128,  192,   256,   512,   1024,
+                                       2048, 4096, 8192, 16384, 32768, 65536, 131072};
+        p.output_limit = limits[std::clamp(form_.choice_index(7), 0, 13)];
+        constexpr unsigned contexts[] = {0, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
+        p.context_length = contexts[std::clamp(form_.choice_index(17), 0, 7)];
+        p.kv_cache = 0;
+        p.thinking = form_.toggle_value(19);
+    }
     constexpr unsigned idle_minutes[] = {1, 2, 5, 10, 30, 60};
     p.idle_unload_minutes = idle_minutes[std::clamp(form_.choice_index(20), 0, 5)];
     app_.set_preferences(std::move(p));
     auto runtime = prospero_settings::get();
-    const auto &state = app_.state();
     const bool audio_model =
         state.selected_model >= 0 &&
         state.models[static_cast<std::size_t>(state.selected_model)].capability ==

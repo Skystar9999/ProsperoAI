@@ -183,15 +183,15 @@ organization, and translated/right-to-left flows remain open.
 
 | # | Implemented in this pass | Remaining acceptance work |
 | --- | --- | --- |
-| 1 | Shared native/API model selection coordinator, runtime lock, and published state. | Queue/recovery semantics and full concurrent/failure coverage. |
-| 2 | Native Workspace picker search and selected/ready distinction. | Capability controls, progress, and matching status in both pickers. |
-| 3 | Live Vulkan/direct/flexible-memory snapshot in API and web UI. | Measured per-model/settings fit estimates and pre-load warnings. |
-| 4 | First-party bearer-key prompt behavior documented; browser key is tab-scoped. | Short-lived browser sessions and visible network exposure settings. |
-| 5 | Bounded persistent model-event journal and JSON export. | Lifecycle, allocation, and API failure coverage across crash/restart paths. |
-| 6 | Native generation sections and plain-language setting explanations. | Advanced/common grouping and complete model-specific range/default guidance. |
-| 7 | Four-texture LRU cap and ccache compiler launcher for PS5 runtime builds. | Before/after GPU memory and clean/incremental build measurements. |
-| 8 | Required download sizes exposed and shown before download. | Free-space preflight; current PS5 storage availability is reported as unknown. |
-| 9 | Web conversation rename, JSON export/import, and existing search. | Archive/pin, media gallery, conversation links, and media delete/export. |
+| 1 | Shared native/API model selection coordinator, runtime lock, and published state. Busy selection returns a retryable conflict. | Recovery after failed preparation and full concurrent/failure coverage. |
+| 2 | Native Workspace picker supports name search and L1/R1 capability filtering, with selected/loading/ready distinction. Web model cards poll the same status. | Percentage progress (the runtime currently exposes stage only) and native visual verification. |
+| 3 | Live Vulkan/direct/flexible-memory snapshot plus persistent model/context memory samples after successful preparation. Web and native model confirmation dialogs show successful historical measurements and say when no history exists. Web shows the installed GGUF size; repository browsing shows remote GGUF size with an explicitly heuristic fit badge. | A trustworthy context-aware fit estimate; file size and historical measurements are not guarantees. |
+| 4 | First-party UI exchanges the configured bearer key for a 30-minute host-bound session and stores only that token in tab-scoped storage. API responses disable caching; external clients continue to use the bearer key. | Verify session expiry/origin checks on console, then add visible network exposure settings. Plain HTTP remains trusted-network-only. |
+| 5 | Bounded persistent journal records app start/clean stop, detects an unclean previous exit, model transitions, and native/API generation success/failure; JSON export remains privacy-filtered. | Runtime allocation error classification and lifecycle smoke coverage. |
+| 6 | Native generation settings hide irrelevant text controls for media models, separate response, advanced, memory, image, and audio groups, and show the current media defaults and supported choices. | Verify layout and wording at each supported text size on console. |
+| 7 | Four-texture LRU cap; ccache for native builds; preparation scripts avoid rewriting unchanged upstream sources; unchanged UI shaders skip SPIR-V compilation; unchanged Vulkan CMake options skip a full configure. CI's host Vulkan job now restores and saves a separate compiler cache. On this host, an unchanged Vulkan runtime build step dropped from 13.8 s to 0.62 s. | Before/after GPU memory measurements and a clean full-build timing. |
+| 8 | Required download sizes are shown in both UIs, and each download asks the user to confirm that they have enough space when the PS5 storage API cannot report free space safely. Verified/resumable download handling remains active. | Safe free-space preflight; current PS5 storage availability is explicitly reported as unknown. |
+| 9 | Web conversation rename, JSON export/import, search, media gallery with source conversation/model links and file download, synced pin/archive state, and guarded deletion of archived media copies. `/api/media` rejects shared references and files outside the owning conversation's output folder. | Console verification of media deletion and export/import flows. |
 | 10 | Visible web focus rings with a stronger high-contrast style. | Translated core flows and shaping/right-to-left support. |
 
 ## Suggested order
