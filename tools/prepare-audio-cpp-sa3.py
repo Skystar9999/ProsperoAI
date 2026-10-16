@@ -15,10 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def replace_once(path: Path, old: str, new: str) -> None:
     source = path.read_text()
-    if new and new in source:
+    # Some PS5 adapters extend a line that remains inside the replacement. In
+    # that case the old fragment is still present after patching, so recognize
+    # the complete replacement before applying it again. For disjoint patches,
+    # wait until the old fragment is gone; the replacement may be common text.
+    if old in new and new in source:
         return
     if old not in source:
-        if not new:
+        if not new or new in source:
             return
     if source.count(old) != 1:
         raise SystemExit(f"{path}: expected one known patch site; inspect source changes")
