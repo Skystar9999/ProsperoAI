@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- On-screen keyboard: a held direction keeps moving, and a held Square keeps deleting. L2
+  switches between letters and symbols and L1 is Shift; R2 is only Done (Send in a
+  conversation). R2 used to switch to symbols and press Done at once, with no way back to
+  letters.
+
 ## 01.006.000
 
 - Text, image, sound and speech generation now use one pinned upstream llama.cpp/GGML Vulkan
