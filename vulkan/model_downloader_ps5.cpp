@@ -371,8 +371,10 @@ struct RangeTask {
     int manifest_fd;
     std::uint64_t first, last;
     std::size_t index;
-    std::uint64_t completed = 0;
     bool ok = false;
+    // Bytes of this range already in the file when the attempt starts; the worker
+    // writes back the total held when it ends, complete or not.
+    std::uint64_t resume = 0;
 };
 
 struct RangeManifestHeader {
@@ -383,76 +385,43 @@ struct RangeManifestHeader {
 // More independent TCP windows make better use of the console's bandwidth to the
 // Hugging Face CDN. Sixteen streams are the highest count verified to complete a full
 // model download on the PS5 test title; a 32-stream trial was killed before completion.
-#ifndef PROSPERO_MODEL_RANGE_CONNECTIONS
-#define PROSPERO_MODEL_RANGE_CONNECTIONS 16
-#endif
-#ifndef PROSPERO_MODEL_PARALLEL_MIN_BYTES
-#define PROSPERO_MODEL_PARALLEL_MIN_BYTES (128ULL * 1024 * 1024)
-#endif
-constexpr std::size_t kRangeConnections = PROSPERO_MODEL_RANGE_CONNECTIONS;
-constexpr std::uint64_t kMinimumParallelBytes = PROSPERO_MODEL_PARALLEL_MIN_BYTES;
-#ifndef PROSPERO_MODEL_RANGE_SYNC_BYTES
-#define PROSPERO_MODEL_RANGE_SYNC_BYTES (8ULL * 1024 * 1024)
-#endif
-constexpr std::uint64_t kRangeSyncBytes = PROSPERO_MODEL_RANGE_SYNC_BYTES;
-constexpr char kPreviousRangeManifestMagic[] = "P5RNG01";
+constexpr std::size_t kRangeConnections = 16;
+// P5RNG02 records the bytes each range has received, not just a done bit: an
+// interrupted download stopped between two range boundaries keeps every byte it wrote
+// instead of starting the file again from zero.
 constexpr char kRangeManifestMagic[] = "P5RNG02";
+#ifndef PROSPERO_TEST_MIN_PARALLEL_BYTES
+constexpr std::uint64_t kMinimumParallelBytes = 128ULL * 1024 * 1024;
+#else
+constexpr std::uint64_t kMinimumParallelBytes = PROSPERO_TEST_MIN_PARALLEL_BYTES;
+#endif
 off_t manifest_state_offset(std::size_t index) {
     return static_cast<off_t>(sizeof(RangeManifestHeader) + index * sizeof(std::uint64_t));
 }
+std::uint64_t range_length(std::size_t index, std::uint64_t expected) {
+    const std::uint64_t chunk = expected / kRangeConnections;
+    return index + 1 == kRangeConnections ? expected - chunk * index : chunk;
+}
 
 bool load_range_manifest(const std::string &path, std::uint64_t expected,
-                         std::array<std::uint64_t, kRangeConnections> &completed) {
-    const int fd = open((path + ".ranges").c_str(), O_RDWR);
+                         std::array<std::uint64_t, kRangeConnections> &received) {
+    const int fd = open((path + ".ranges").c_str(), O_RDONLY);
     if (fd < 0) return false;
     RangeManifestHeader header{};
     const ssize_t bytes = read(fd, &header, sizeof(header));
     struct stat part_info{};
-    const bool current_version = std::memcmp(header.magic, kRangeManifestMagic,
-                                             sizeof(header.magic)) == 0;
-    const bool previous_version = std::memcmp(header.magic, kPreviousRangeManifestMagic,
-                                              sizeof(header.magic)) == 0;
     const bool valid = bytes == static_cast<ssize_t>(sizeof(header)) &&
-                       (current_version || previous_version) &&
+                       std::memcmp(header.magic, kRangeManifestMagic, sizeof(header.magic)) == 0 &&
                        header.expected == expected && header.count == kRangeConnections &&
                        stat(path.c_str(), &part_info) == 0 &&
                        static_cast<std::uint64_t>(part_info.st_size) == expected;
     if (valid) {
-        const std::uint64_t chunk = expected / kRangeConnections;
-        for (std::size_t i = 0; i < completed.size(); ++i) {
-            const std::uint64_t length = i + 1 == kRangeConnections
-                                             ? expected - chunk * i : chunk;
-            if (previous_version) {
-                std::uint8_t state = 0;
-                if (pread(fd, &state, sizeof(state),
-                          static_cast<off_t>(sizeof(RangeManifestHeader) + i)) !=
-                        static_cast<ssize_t>(sizeof(state)) || state > 1) {
-                    close(fd);
-                    return false;
-                }
-                completed[i] = state ? length : 0;
-            } else {
-                const bool read = pread(fd, &completed[i], sizeof(completed[i]),
-                                        manifest_state_offset(i)) ==
-                                  static_cast<ssize_t>(sizeof(completed[i]));
-                if (!read || completed[i] > length) {
-                    close(fd);
-                    return false;
-                }
-            }
-        }
-    }
-    if (valid && previous_version) {
-        std::memcpy(header.magic, kRangeManifestMagic, sizeof(header.magic));
-        const bool upgraded = pwrite(fd, &header, sizeof(header), 0) ==
-                                  static_cast<ssize_t>(sizeof(header)) &&
-                              pwrite(fd, completed.data(), sizeof(completed),
-                                     sizeof(RangeManifestHeader)) ==
-                                  static_cast<ssize_t>(sizeof(completed)) &&
-                              fsync(fd) == 0;
-        if (!upgraded) {
-            close(fd);
-            return false;
+        for (std::size_t i = 0; i < received.size(); ++i) {
+            std::uint64_t held = 0;
+            received[i] = pread(fd, &held, sizeof(held), manifest_state_offset(i)) ==
+                                          static_cast<ssize_t>(sizeof(held))
+                                      ? std::min(held, range_length(i, expected))
+                                      : 0;
         }
     }
     close(fd);
@@ -468,7 +437,8 @@ bool create_range_manifest(const std::string &path, std::uint64_t expected) {
     header.count = kRangeConnections;
     const std::array<std::uint64_t, kRangeConnections> states{};
     const bool ok = write(fd, &header, sizeof(header)) == static_cast<ssize_t>(sizeof(header)) &&
-                    write(fd, states.data(), sizeof(states)) == static_cast<ssize_t>(sizeof(states)) &&
+                    write(fd, states.data(), states.size() * sizeof(std::uint64_t)) ==
+                        static_cast<ssize_t>(states.size() * sizeof(std::uint64_t)) &&
                     fsync(fd) == 0;
     close(fd);
     return ok;
@@ -476,60 +446,62 @@ bool create_range_manifest(const std::string &path, std::uint64_t expected) {
 
 void *download_range(void *opaque) {
     auto &task = *static_cast<RangeTask *>(opaque);
-    HttpSession http;
     const std::uint64_t length = task.last - task.first + 1;
-    if (task.completed > length) return nullptr;
-    if (task.completed == length) { task.ok = true; return nullptr; }
-    if (!http.get_range(*task.url, task.first + task.completed, task.last)) return nullptr;
-    const int file = open(task.path->c_str(), O_WRONLY);
-    if (file < 0) return nullptr;
-    std::vector<std::uint8_t> buffer(1024 * 1024);
-    std::uint64_t received = task.completed;
-    std::uint64_t since_sync = 0;
+    // A resumed range asks for everything after its last saved byte, and a range the
+    // manifest already reports as whole is not fetched at all.
+    std::uint64_t received = std::min(task.resume, length);
     bool ok = true;
-    while (received < length && ok) {
-        const int count = http.read(buffer.data(), std::min<std::uint64_t>(buffer.size(), length - received));
-        if (count <= 0) { ok = false; break; }
-        std::size_t written = 0;
-        while (written < static_cast<std::size_t>(count)) {
-            const ssize_t amount = pwrite(file, buffer.data() + written,
-                                          static_cast<std::size_t>(count) - written,
-                                          static_cast<off_t>(task.first + received + written));
-            if (amount <= 0) { ok = false; break; }
-            written += static_cast<std::size_t>(amount);
-        }
-        if (ok) {
-            received += static_cast<std::uint64_t>(count);
-            since_sync += static_cast<std::uint64_t>(count);
-            completed_bytes.fetch_add(static_cast<std::uint64_t>(count), std::memory_order_acq_rel);
-            if (since_sync >= kRangeSyncBytes || received == length) {
-                if (fsync(file) != 0 ||
-                    pwrite(task.manifest_fd, &received, sizeof(received),
-                           manifest_state_offset(task.index)) !=
-                        static_cast<ssize_t>(sizeof(received)) ||
-                    fsync(task.manifest_fd) != 0) {
-                    ok = false;
-                    break;
-                }
-                task.completed = received;
-                since_sync = 0;
+    if (received < length) {
+        HttpSession http;
+        ok = http.get_range(*task.url, task.first + received, task.last);
+        const int file = ok ? open(task.path->c_str(), O_WRONLY) : -1;
+        if (ok && file < 0) ok = false;
+        std::vector<std::uint8_t> buffer(1024 * 1024);
+        while (received < length && ok) {
+            const int count = http.read(buffer.data(),
+                                        std::min<std::uint64_t>(buffer.size(), length - received));
+            if (count <= 0) { ok = false; break; }
+            std::size_t written = 0;
+            while (written < static_cast<std::size_t>(count)) {
+                const ssize_t amount = pwrite(file, buffer.data() + written,
+                                              static_cast<std::size_t>(count) - written,
+                                              static_cast<off_t>(task.first + received + written));
+                if (amount <= 0) { ok = false; break; }
+                written += static_cast<std::size_t>(amount);
+            }
+            if (ok) {
+                received += static_cast<std::uint64_t>(count);
+                completed_bytes.fetch_add(static_cast<std::uint64_t>(count), std::memory_order_acq_rel);
             }
         }
+        if (ok) {
+            std::uint8_t extra = 0;
+            if (http.read(&extra, 1) != 0) ok = false;
+        }
+        if (file >= 0) close(file);
     }
-    if (ok) {
-        std::uint8_t extra = 0;
-        if (http.read(&extra, 1) != 0) ok = false;
-    }
-    close(file);
     task.ok = ok && received == length && !cancel_pending();
+    // Record the byte count even when the connection dropped: the next attempt picks
+    // the range up where this one stopped instead of refetching it from its first byte.
+    const std::uint64_t held = received;
+    task.resume = held;
+    const int sync_file = open(task.path->c_str(), O_WRONLY);
+    if (sync_file >= 0) {
+        if (fsync(sync_file) != 0) task.ok = false;
+        close(sync_file);
+    }
+    if (pwrite(task.manifest_fd, &held, sizeof(held), manifest_state_offset(task.index)) !=
+        static_cast<ssize_t>(sizeof(held)))
+        task.ok = false;
+    if (fsync(task.manifest_fd) != 0) task.ok = false;
     return nullptr;
 }
 
 enum class ParallelResult { Unsupported, Failed, Complete };
 ParallelResult fetch_parallel(const std::string &url, const std::string &part,
                               std::uint64_t expected, std::uint64_t base,
-                              std::array<std::uint64_t, kRangeConnections> completed) {
-    const bool resuming = std::any_of(completed.begin(), completed.end(), [](std::uint64_t value) { return value != 0; });
+                              std::array<std::uint64_t, kRangeConnections> received,
+                              bool resuming) {
     if (expected < kMinimumParallelBytes || (!resuming && !range_supported(url)))
         return ParallelResult::Unsupported;
     const int file = open(part.c_str(), resuming ? O_WRONLY : O_CREAT | O_TRUNC | O_WRONLY, 0666);
@@ -557,12 +529,10 @@ ParallelResult fetch_parallel(const std::string &url, const std::string &part,
     const std::uint64_t chunk = expected / kRangeConnections;
     std::size_t started = 0;
     for (std::size_t i = 0; i < kRangeConnections; ++i) {
-        const std::uint64_t length = i + 1 == kRangeConnections
-                                         ? expected - chunk * i : chunk;
-        if (completed[i] == length) continue;
+        if (received[i] >= range_length(i, expected)) continue;
         tasks[i] = {&url, &part, manifest_fd, chunk * i,
-                    i + 1 == kRangeConnections ? expected - 1 : chunk * (i + 1) - 1,
-                    i, completed[i], false};
+                    i + 1 == kRangeConnections ? expected - 1 : chunk * (i + 1) - 1, i, false,
+                    received[i]};
         if (scePthreadCreate(&threads[i], nullptr, download_range, &tasks[i], "model-range") != 0)
             break;
         ++started;
@@ -570,9 +540,7 @@ ParallelResult fetch_parallel(const std::string &url, const std::string &part,
     std::size_t joined = 0;
     bool created_all = true;
     for (std::size_t i = 0; i < kRangeConnections; ++i) {
-        const std::uint64_t length = i + 1 == kRangeConnections
-                                         ? expected - chunk * i : chunk;
-        if (completed[i] == length) continue;
+        if (tasks[i].url == nullptr) continue;
         if (joined < started) {
             scePthreadJoin(threads[i], nullptr);
             ++joined;
@@ -581,33 +549,23 @@ ParallelResult fetch_parallel(const std::string &url, const std::string &part,
             break;
         }
     }
-    for (std::size_t i = 0; i < kRangeConnections; ++i)
-        if (tasks[i].completed > completed[i]) completed[i] = tasks[i].completed;
+    std::uint64_t saved = 0;
+    for (std::size_t i = 0; i < kRangeConnections; ++i) {
+        if (tasks[i].url != nullptr) received[i] = tasks[i].resume;
+        saved += std::min(received[i], range_length(i, expected));
+    }
     close(manifest_fd);
     bool all_complete = created_all;
-    for (std::size_t i = 0; i < kRangeConnections; ++i) {
-        const std::uint64_t length = i + 1 == kRangeConnections
-                                         ? expected - chunk * i : chunk;
-        all_complete = all_complete && completed[i] == length;
-    }
-    std::uint64_t saved = 0;
     for (std::size_t i = 0; i < kRangeConnections; ++i)
-        saved += completed[i];
+        all_complete = all_complete && received[i] >= range_length(i, expected);
     if (!all_complete) {
         if (cancel_pending()) {
             std::remove(part.c_str());
             std::remove((part + ".ranges").c_str());
         }
         completed_bytes.store(cancel_pending() ? base : base + saved, std::memory_order_release);
-        char message[160];
-        if (cancel_pending())
-            std::snprintf(message, sizeof(message), "Download cancelled. Nothing of it was kept.");
-        else
-            std::snprintf(message, sizeof(message),
-                          "Download stopped at %llu of %llu MiB. Saved progress; retry to continue.",
-                          static_cast<unsigned long long>((base + saved) >> 20),
-                          static_cast<unsigned long long>(total_bytes.load() >> 20));
-        set_status(message);
+        set_status(cancel_pending() ? "Download cancelled. Nothing of it was kept."
+                                   : "Download stopped. Bytes received are saved; retry to continue.");
         current.store(cancel_pending() ? State::Idle : State::Failed, std::memory_order_release);
         return ParallelResult::Failed;
     }
@@ -634,8 +592,8 @@ bool fetch_verified(HttpSession &http, const std::string &url, const std::string
                     std::uint64_t expected, const std::string &sha256, std::uint64_t base,
                     const char *name) {
     Sha256 hash;
-    std::array<std::uint64_t, kRangeConnections> range_completed{};
-    const bool range_resume = load_range_manifest(part, expected, range_completed);
+    std::array<std::uint64_t, kRangeConnections> received{};
+    const bool range_resume = load_range_manifest(part, expected, received);
     if (!range_resume && access((part + ".ranges").c_str(), F_OK) == 0) {
         std::remove(part.c_str());
         std::remove((part + ".ranges").c_str());
@@ -647,7 +605,7 @@ bool fetch_verified(HttpSession &http, const std::string &url, const std::string
     if (range_resume) {
         std::uint64_t saved = 0;
         for (std::size_t i = 0; i < kRangeConnections; ++i)
-            saved += range_completed[i];
+            saved += std::min(received[i], range_length(i, expected));
         completed_bytes.store(base + saved, std::memory_order_release);
     }
     if (done) prospero::debug::line("download", "%s: continuing at %llu of %llu bytes", name,
@@ -657,7 +615,7 @@ bool fetch_verified(HttpSession &http, const std::string &url, const std::string
     bool ok = true, network_failed = false;
     bool parallel = false;
     if ((range_resume || (done == 0 && expected >= kMinimumParallelBytes))) {
-        const auto result = fetch_parallel(url, part, expected, base, range_completed);
+        const auto result = fetch_parallel(url, part, expected, base, received, range_resume);
         if (result == ParallelResult::Failed) return false;
         parallel = result == ParallelResult::Complete;
         if (!parallel && range_resume)
