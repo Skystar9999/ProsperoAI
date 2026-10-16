@@ -91,8 +91,8 @@ extern "C"
             return 0;
         if (session->pos >= break_at)
             return -1;
-        std::size_t count = std::min({size, session->end - session->pos,
-                                      served.size() - session->pos, std::size_t{7}});
+        std::size_t count = std::min(
+            {size, session->end - session->pos, served.size() - session->pos, std::size_t{7}});
         if (break_at != std::string::npos)
             count = std::min(count, break_at - session->pos);
         std::memcpy(buffer, served.data() + session->pos, count);
@@ -276,10 +276,11 @@ int main()
     const std::string ppart = std::string(folder) + "/parallel.gguf.part";
     break_at = 1400; // chunk is 256: whole ranges below the break plus one partial range
     current.store(State::Downloading);
-    const bool first_ok = !fetch_verified(session, "https://huggingface.co/p", ppart, served.size(), parallel_digest, 0, "p");
-    char dbg_status[200]{}; status(dbg_status, sizeof(dbg_status));
-    assert(first_ok);
-    struct stat part_info{};
+    assert(!fetch_verified(session, "https://huggingface.co/p", ppart, served.size(),
+                           parallel_digest, 0, "p"));
+    struct stat part_info
+    {
+    };
     assert(real_stat(ppart.c_str(), &part_info) == 0 &&
            static_cast<std::uint64_t>(part_info.st_size) == served.size());
     assert(access((ppart + ".ranges").c_str(), F_OK) == 0);

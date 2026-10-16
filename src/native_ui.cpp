@@ -1548,8 +1548,10 @@ void NativeUI::Impl::build_generation_form()
         {"1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes", "60 minutes"},
         selected_idle);
     const auto &state = app_.state();
-    const bool audio_model = state.selected_model >= 0 &&
-        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Audio;
+    const bool audio_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Audio;
     if (audio_model)
     {
         constexpr unsigned durations[] = {0, 8, 16, 30, 60, 120, 300};
@@ -1562,29 +1564,31 @@ void NativeUI::Impl::build_generation_form()
                             ? "Model default"
                             : std::to_string(runtime.audio_duration_sec) + " seconds");
         form_.add_choice(24, "Audio clip duration",
-                         {"Keep current", "Model default", "8 seconds", "16 seconds",
-                          "30 seconds", "60 seconds", "120 seconds", "300 seconds"},
+                         {"Keep current", "Model default", "8 seconds", "16 seconds", "30 seconds",
+                          "60 seconds", "120 seconds", "300 seconds"},
                          selected_duration);
         form_.add_value(27, "Current audio seed", std::to_string(runtime.audio_seed));
-        form_.add_choice(28, "Audio seed",
-                         {"Keep current", "42", "123", "1234", "2026", "0"}, 0);
+        form_.add_choice(28, "Audio seed", {"Keep current", "42", "123", "1234", "2026", "0"}, 0);
     }
-    const bool image_model = state.selected_model >= 0 &&
-        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Image;
+    const bool image_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Image;
     if (image_model)
     {
         form_.add_value(25, "Current image seed",
-                       runtime.sd_seed == 0 ? "Random" : std::to_string(runtime.sd_seed));
-        form_.add_choice(26, "Image seed",
-                         {"Keep current", "42", "123", "1234", "2026", "Random"}, 0);
+                        runtime.sd_seed == 0 ? "Random" : std::to_string(runtime.sd_seed));
+        form_.add_choice(26, "Image seed", {"Keep current", "42", "123", "1234", "2026", "Random"},
+                         0);
         std::string image_size = "Model default";
         if (runtime.sd_width && runtime.sd_height)
-            image_size = std::to_string(runtime.sd_width) + " x " +
-                         std::to_string(runtime.sd_height);
+            image_size =
+                std::to_string(runtime.sd_width) + " x " + std::to_string(runtime.sd_height);
         form_.add_value(30, "Current image size", image_size);
-        form_.add_choice(31, "Image size",
-                         {"Keep current", "Model default", "512 x 512", "768 x 768",
-                          "512 x 768", "768 x 512"}, 0);
+        form_.add_choice(
+            31, "Image size",
+            {"Keep current", "Model default", "512 x 512", "768 x 768", "512 x 768", "768 x 512"},
+            0);
         form_.add_choice(32, "Image upscaler", {"Off", "Real-ESRGAN 4x"},
                          runtime.sd_upscale ? 1 : 0);
         if (runtime.sd_upscale)
@@ -1649,10 +1653,14 @@ void NativeUI::Impl::apply_generation_form()
     app_.set_preferences(std::move(p));
     auto runtime = prospero_settings::get();
     const auto &state = app_.state();
-    const bool audio_model = state.selected_model >= 0 &&
-        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Audio;
-    const bool image_model = state.selected_model >= 0 &&
-        state.models[static_cast<std::size_t>(state.selected_model)].capability == Capability::Image;
+    const bool audio_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Audio;
+    const bool image_model =
+        state.selected_model >= 0 &&
+        state.models[static_cast<std::size_t>(state.selected_model)].capability ==
+            Capability::Image;
     bool runtime_changed = false;
     if (audio_model)
     {
@@ -1682,7 +1690,8 @@ void NativeUI::Impl::apply_generation_form()
         }
         runtime_changed = runtime_changed || selected_seed != 0 || selected_size != 0;
         runtime.sd_upscale = form_.choice_index(32) == 1;
-        runtime_changed = runtime_changed || runtime.sd_upscale != prospero_settings::get().sd_upscale;
+        runtime_changed =
+            runtime_changed || runtime.sd_upscale != prospero_settings::get().sd_upscale;
     }
     if (runtime_changed && !prospero_settings::set(runtime))
     {
