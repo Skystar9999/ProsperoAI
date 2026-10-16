@@ -1,6 +1,6 @@
 # ProsperoAI improvement plan
 
-This plan records seven focused improvements for the native PS5 app, hosted web UI,
+This plan records ten focused improvements for the native PS5 app, hosted web UI,
 and HTTP API. It is a roadmap; it does not claim that the work below has been
 implemented.
 
@@ -125,6 +125,55 @@ quality or causing regressions. Clean and incremental build timings are recorded
 incremental changes rebuild only affected components and produce the same verified
 app artifacts.
 
+## 8. Make model downloads storage-aware
+
+**Problem.** Curated model downloads can be large, and a download can fail late if
+the console does not have enough free storage. Users need a clear view of the space
+required and the models already taking space.
+
+**Plan.** Show the expected download size and available space before starting. Keep
+the existing resumable-download behavior, explain when a partial download can be
+resumed, and provide clear retry and cleanup actions. Verify downloaded files before
+making a model available, and never remove unrelated model data automatically.
+
+**Acceptance criteria.** A user sees a storage preflight before a large download,
+can resume a supported interrupted transfer, and receives a specific error when
+space or integrity checks fail. Cleanup always names the exact files it will remove.
+
+## 9. Improve conversation and media management
+
+**Problem.** Conversations can accumulate generated text, images, and audio. As the
+history grows, finding a specific result or organizing work becomes harder, and
+generated media is not as easy to manage independently from its conversation.
+
+**Plan.** Add conversation search and practical organization actions such as rename,
+pin/archive, and export/import. Provide a media view for browsing image and audio
+outputs with their source conversation and model, plus safe delete and export
+actions. Keep saved conversation data readable if an associated model is removed.
+
+**Acceptance criteria.** Users can find conversations by title or content, export
+and restore a conversation, and browse or export generated media without losing its
+conversation link. Deleting one item does not silently delete unrelated history or
+outputs.
+
+## 10. Expand accessibility and localization
+
+**Problem.** The interface has reduced motion, high contrast, and a larger text
+setting, but the experience can still be difficult for users who need more
+controller guidance, clearer focus, or a UI language other than English. Some
+scripts also need shaping and right-to-left layout in addition to glyph coverage.
+
+**Plan.** Review every page and dialog for visible controller focus, readable
+contrast, scalable layouts, and clear action labels. Add selectable UI languages
+with translated core flows, then support text shaping and right-to-left layout for
+languages that require them. Keep the existing reduced-motion, high-contrast, and
+text-size settings available throughout.
+
+**Acceptance criteria.** Core tasks can be completed with controller-only
+navigation at supported text sizes and contrast settings. Translated pages do not
+clip labels, and supported right-to-left scripts render in the correct order with
+shaping.
+
 ## Suggested order
 
 1. Build the shared model manager and common state transitions.
@@ -134,6 +183,10 @@ app artifacts.
 5. Measure console memory and build time, then optimize against those baselines.
 6. Collect model memory measurements and add conservative preparation warnings.
 7. Design and implement browser authorization alongside the API security review.
+8. Add model download storage preflight and clear recovery actions.
+9. Improve conversation and generated-media management.
+10. Expand accessibility and localization after the core interaction patterns are
+    reviewed across all pages and dialogs.
 
 Each item should be implemented and verified as a separate change, with console
 verification for runtime, memory, and crash-handling behavior.
