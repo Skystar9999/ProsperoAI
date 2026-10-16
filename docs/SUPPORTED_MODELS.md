@@ -30,6 +30,9 @@ or the web workspace's Generation settings. The UI offers model default, 8, 16, 
 `audio_duration_sec` runtime setting also accepts 1-300 through `POST /api/settings/runtime` or
 the settings file (`0` restores per-model defaults); audio.cpp's planner may clamp a request the
 loaded model cannot serve. The API's `audio_seed` default is 42.
+Vocal clarity has not been validated for every language. Romanian and other non-English lyrics
+may sound unclear; changing the duration or seed does not guarantee pronunciation or select a
+specific lyric section.
 
 Image generation uses the `sd_seed` runtime setting. Its default is 42; `0` requests a random
 seed. Set it through `POST /api/settings/runtime` or the web workspace. The native Generation
