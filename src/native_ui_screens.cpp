@@ -2,6 +2,7 @@
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "native_ui_impl.hpp"
+#include "http_server.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -748,7 +749,15 @@ void NativeUI::Impl::draw_mobile(ui::Canvas &canvas) const
         text(list, fit(mobile_url_, 22, 540, false), info_x, 562, 22, palette_.muted);
     text(list, "Your phone and PS5 must be on the same local network.", info_x, 650, 21,
          palette_.muted);
-    text(list, "Models and generation stay on your console.", info_x, 684, 21, palette_.muted);
+    const int auth_status = prospero_http_server_auth_status();
+    const char *auth_text = auth_status < 0
+                                ? "API key configuration is invalid; requests are blocked."
+                            : auth_status > 0 ? "API key protection is enabled."
+                                              : "API key protection is off.";
+    text(list, auth_text, info_x, 684, 21, palette_.muted);
+    text(list, "HTTP is not encrypted. Use only a trusted network.", info_x, 718, 21,
+         palette_.warn);
+    text(list, "Models and generation stay on your console.", info_x, 752, 21, palette_.muted);
 }
 
 } // namespace prospero

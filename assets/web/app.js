@@ -314,6 +314,11 @@ void syncConversations();setInterval(syncConversations,4000);setInterval(refresh
 let audioContext;function sound(){if(!preferences.sounds)return;try{audioContext??=new (window.AudioContext||window.webkitAudioContext)();const osc=audioContext.createOscillator(),gain=audioContext.createGain();osc.type='sine';osc.frequency.value=620;gain.gain.setValueAtTime(preferences.volume*0.08,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(0.0001,audioContext.currentTime+0.09);osc.connect(gain);gain.connect(audioContext.destination);osc.start();osc.stop(audioContext.currentTime+0.1);}catch{}}
 document.addEventListener('click',e=>{if(e.target.closest('button'))sound();});
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-category]')){const chosen=b===button;b.classList.toggle('selected',chosen);b.setAttribute('aria-selected',String(chosen));$('setting-'+b.dataset.category).hidden=!chosen;}};
+$('connection-security').textContent='Checking API security…';
+fetch('/api/settings/security',{cache:'no-store'}).then(async response=>{if(!response.ok)throw Error('Could not read API security settings.');return response.json();}).then(state=>{
+  const auth=state.authentication==='required'?'API key protection is enabled.':state.authentication==='disabled'?'API key protection is off.':'API key configuration is invalid; API requests are blocked.';
+  $('connection-security').textContent=`${auth} This API uses unencrypted HTTP and is reachable by devices that can access the PS5 on the network. Use only a trusted local network.`;
+}).catch(()=>{$('connection-security').textContent='API security status is unavailable. The API uses unencrypted HTTP; use only a trusted local network.';});
 $('preview-send').onclick=()=>{newConversation();$('prompt').value='Tell me a story.';$('prompt').focus();};
 
 let savedKokoroVoice='af_heart',savedChatterboxVoice='cemo',savedChatterboxLanguage='en',customChatterboxVoiceAvailable=false,savedAudioDuration=0,savedAudioSeed=42,savedSdSeed=42,savedSdSize='0,0',savedSdUpscale=false;

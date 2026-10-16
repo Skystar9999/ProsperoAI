@@ -20,6 +20,7 @@ retained by the page. The listener uses plain HTTP, so use this only on a truste
 | `GET` | `/v1/models` | List installed models and their IDs. |
 | `POST` | `/v1/chat/completions` | Generate text, optionally streaming Server-Sent Events; supports function/tool calls. |
 | `POST` | `/api/auth/session` | Exchange the configured bearer key for a 30-minute same-origin browser session. |
+| `GET` | `/api/settings/security` | Read the API authentication mode, HTTP transport, and listener exposure. This status contains no credential and does not require authentication. |
 
 Use a model ID returned by `/v1/models`. See [OpenCode setup and API limits](OPENCODE.md)
 for request limits, tool-call behavior, and a client configuration example.

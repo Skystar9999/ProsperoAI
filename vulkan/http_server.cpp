@@ -2080,6 +2080,23 @@ void handle_connection(const NetApi &api, int sock)
         return;
     }
 #endif
+    // This exposes only the security mode, never the configured credential. Keep it
+    // readable without a key so a misconfigured install can explain why API calls fail.
+    if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/settings/security") == 0)
+    {
+        const char *authentication = !api_key_valid ? "misconfigured"
+                                     : !api_key.empty() ? "required"
+                                                        : "disabled";
+        send_json(api, sock,
+                  nlohmann::json{{"authentication", authentication},
+                                 {"transport", "http"},
+                                 {"listener_scope", "all_interfaces"},
+                                 {"encrypted", false}}
+                      .dump()
+                      .c_str());
+        api.socket_close(sock);
+        return;
+    }
     if (!api_authorized(request))
         openai_error(api, sock, "401 Unauthorized", "invalid_api_key",
                      "A valid bearer API key is required.");
@@ -2349,6 +2366,11 @@ bool prospero_http_server_mobile_url(char *text, std::size_t capacity)
         return false;
     }
     return true;
+}
+
+int prospero_http_server_auth_status()
+{
+    return !api_key_valid ? -1 : !api_key.empty() ? 1 : 0;
 }
 
 bool prospero_http_server_start(unsigned short port)

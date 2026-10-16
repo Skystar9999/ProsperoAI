@@ -484,6 +484,18 @@ class HttpApiTests(unittest.TestCase):
         head, _ = self.request("/v1/models", key="secret", headers=["authorization: Bearer secret"])
         self.assertIn("200", head)
 
+    def test_security_status_exposes_mode_but_never_the_key(self):
+        head, body = self.request("/api/settings/security")
+        self.assertIn("200 OK", head)
+        self.assertEqual(json.loads(body), {
+            "authentication": "disabled", "transport": "http",
+            "listener_scope": "all_interfaces", "encrypted": False,
+        })
+        head, body = self.request("/api/settings/security", key="secret")
+        self.assertIn("200 OK", head)
+        self.assertEqual(json.loads(body)["authentication"], "required")
+        self.assertNotIn("secret", body)
+
     def test_nested_text_parts_and_escaped_content(self):
         text = 'quoted " and } braces café 😀'
         body = {"model":"tiny.gguf", "messages":[{"role":"user", "content":[{"type":"text","text":text}]},
