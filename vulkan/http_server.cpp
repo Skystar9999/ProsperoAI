@@ -21,6 +21,7 @@
 #include "voice_recorder.hpp"
 #include "session_store.hpp"
 #include "generation_limits.hpp"
+#include "prospero_search.hpp"
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
 #include "model_downloader_ps5.hpp"
 #endif
@@ -995,6 +996,29 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if (it.key() == "web_search" && it.value().is_boolean())
+            {
+                p.web_search = it.value().get<bool>();
+                valid = true;
+            }
+            else if (it.key() == "search_scopes" && it.value().is_number_integer())
+            {
+                const auto scopes = it.value().get<long long>();
+                if (scopes > 0 && scopes <= prospero_settings::kAllSearchScopes)
+                {
+                    p.search_scopes = static_cast<unsigned>(scopes);
+                    valid = true;
+                }
+            }
+            else if (it.key() == "web_search_timeout" && it.value().is_number_integer())
+            {
+                const auto timeout = it.value().get<long long>();
+                if (timeout >= 0 && prospero_settings::valid_web_search_timeout(static_cast<unsigned>(timeout)))
+                {
+                    p.web_search_timeout_seconds = static_cast<unsigned>(timeout);
+                    valid = true;
+                }
+            }
             if (!valid)
             {
                 openai_error(api, sock, "400 Bad Request", "invalid_settings",
@@ -1017,6 +1041,9 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"kv", prospero_settings::kv_name(p.kv)},
                        {"thinking", p.thinking},
                        {"idle_unload_minutes", p.idle_unload_minutes},
+                       {"web_search", p.web_search},
+                       {"web_search_timeout", p.web_search_timeout_seconds},
+                       {"search_scopes", p.search_scopes},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
                        {"chatterbox_language", prospero_language::chatterbox_language(p.chatterbox_language).code},
@@ -1024,6 +1051,185 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"kokoro_voices", [&] { nlohmann::json a=nlohmann::json::array(); for (const auto &v : prospero_voice::runtime_voices(false)) a.push_back({{"id",v.id},{"name",v.name},{"locale",v.locale}}); return a; }()},
                        {"chatterbox_voices", [&] { nlohmann::json a=nlohmann::json::array(); for (const auto &v : prospero_voice::runtime_voices(true)) a.push_back({{"id",v.id},{"name",v.name},{"locale",v.locale}}); return a; }()}}
             .dump();
+    send_json(api, sock, response.c_str());
+}
+
+const char *outcome_name(prospero_search::Outcome outcome)
+{
+    switch (outcome)
+    {
+    case prospero_search::Outcome::Ok: return "ok";
+    case prospero_search::Outcome::Throttled: return "throttled";
+    case prospero_search::Outcome::HttpStatus: return "http_status";
+    case prospero_search::Outcome::Transport: return "transport";
+    case prospero_search::Outcome::Unusable: return "unusable";
+    case prospero_search::Outcome::Skipped: break;
+    }
+    return "skipped";
+}
+
+/* Turns the scopes a caller asked for into the list to query, honouring the
+ * scopes switched off in Settings. An empty request means every enabled scope. */
+bool resolve_scopes(const nlohmann::json &request, unsigned enabled,
+                    std::vector<prospero_search::Scope> *scopes, std::string *error)
+{
+    const auto add = [&](prospero_search::Scope scope) {
+        if (enabled & (1u << static_cast<unsigned>(scope))) scopes->push_back(scope);
+    };
+    if (!request.contains("scopes"))
+    {
+        for (unsigned i = 0; i < static_cast<unsigned>(prospero_search::Scope::Count); ++i)
+            add(static_cast<prospero_search::Scope>(i));
+        return true;
+    }
+    if (!request["scopes"].is_array())
+    {
+        *error = "scopes must be an array of scope names.";
+        return false;
+    }
+    for (const auto &entry : request["scopes"])
+    {
+        prospero_search::Scope scope{};
+        if (!entry.is_string() || !prospero_search::scope_from_name(entry.get<std::string>(), &scope))
+        {
+            *error = "Unknown search scope.";
+            return false;
+        }
+        add(scope);
+    }
+    if (scopes->empty())
+    {
+        *error = "Every scope asked for is switched off in Settings.";
+        return false;
+    }
+    return true;
+}
+
+void handle_search(const NetApi &api, int sock, const char *body)
+{
+    const auto request = nlohmann::json::parse(body ? body : "", nullptr, false);
+    if (!request.is_object() || !request.contains("query") || !request["query"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_search", "Expected a search query.");
+        return;
+    }
+    const auto settings = prospero_settings::get();
+    if (!settings.web_search)
+    {
+        openai_error(api, sock, "409 Conflict", "web_search_disabled",
+                     "Enable search in Settings first.");
+        return;
+    }
+    prospero_search::Request search;
+    search.query = request["query"].get<std::string>();
+    search.timeout_seconds = settings.web_search_timeout_seconds;
+    if (request.contains("limit"))
+    {
+        if (!request["limit"].is_number_integer() || request["limit"].get<int>() < 1 ||
+            request["limit"].get<int>() > static_cast<int>(prospero_search::kMaxResults))
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_search_limit",
+                         "Search result limit must be between 1 and 25.");
+            return;
+        }
+        search.maximum = request["limit"].get<unsigned>();
+    }
+    if (request.contains("fresh") && request["fresh"].is_boolean())
+        search.use_cache = !request["fresh"].get<bool>();
+    if (!prospero_search::valid_query(search.query))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_search_query",
+                     "Search queries must be 2\u2013256 characters without control characters.");
+        return;
+    }
+    std::string scope_error;
+    if (!resolve_scopes(request, settings.search_scopes, &search.scopes, &scope_error))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_search_scope", scope_error.c_str());
+        return;
+    }
+    prospero_search::Response found;
+    const bool ok = prospero_search::search(search, &found);
+    nlohmann::json providers = nlohmann::json::array();
+    for (const auto &report : found.reports)
+        providers.push_back({{"id", report.id},
+                             {"outcome", outcome_name(report.outcome)},
+                             {"http_status", report.http_status},
+                             {"results", report.results},
+                             {"detail", report.detail}});
+    if (!ok)
+    {
+        /* The provider reports say which sites were asked and how each answered,
+         * so a caller can tell throttling from an empty index. */
+        const auto failure = nlohmann::json{{"error",
+                                             {{"message", found.error}, {"type", "search_failed"}}},
+                                            {"providers", providers}}
+                                 .dump();
+        send_status(api, sock, "502 Bad Gateway", "application/json", failure.c_str());
+        return;
+    }
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto &item : found.results)
+        data.push_back({{"title", item.title},
+                        {"url", item.url},
+                        {"snippet", item.snippet},
+                        {"source", item.source},
+                        {"score", item.score}});
+    const auto response = nlohmann::json{{"query", search.query},
+                                         {"data", data},
+                                         {"cached", found.from_cache},
+                                         {"providers", providers}}
+                              .dump();
+    send_json(api, sock, response.c_str());
+}
+
+/* Reads one page as plain text, so a model can follow a result it just found. */
+void handle_fetch(const NetApi &api, int sock, const char *body)
+{
+    const auto request = nlohmann::json::parse(body ? body : "", nullptr, false);
+    if (!request.is_object() || !request.contains("url") || !request["url"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_fetch", "Expected a page address.");
+        return;
+    }
+    const auto settings = prospero_settings::get();
+    if (!settings.web_search)
+    {
+        openai_error(api, sock, "409 Conflict", "web_search_disabled",
+                     "Enable search in Settings first.");
+        return;
+    }
+    std::size_t limit = 16u * 1024u;
+    if (request.contains("limit"))
+    {
+        if (!request["limit"].is_number_integer() || request["limit"].get<long long>() < 256 ||
+            request["limit"].get<long long>() > 131072)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_fetch_limit",
+                         "Text limit must be between 256 and 131072 bytes.");
+            return;
+        }
+        limit = static_cast<std::size_t>(request["limit"].get<long long>());
+    }
+    std::string text, error;
+    const auto url = request["url"].get<std::string>();
+    /* An address that cannot be read is the caller's mistake, not a gateway
+     * failure; 502 is kept for a page that was actually asked for and failed. */
+    const bool addressed = (url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0) &&
+                           url.size() <= 2048 && url.find_first_of("\r\n\t <>\"") == std::string::npos;
+    if (!addressed)
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_fetch_url",
+                     "Only http and https addresses of at most 2048 characters can be read.");
+        return;
+    }
+    if (!prospero_search::fetch_page(url, settings.web_search_timeout_seconds, limit, &text, &error))
+    {
+        openai_error(api, sock, "502 Bad Gateway", "fetch_failed", error.c_str());
+        return;
+    }
+    const auto response =
+        nlohmann::json{{"url", url}, {"text", text}, {"bytes", text.size()}}.dump();
     send_json(api, sock, response.c_str());
 }
 
@@ -1227,7 +1433,8 @@ bool media_path_allowed(const std::string &path)
     if (path.find("..") != std::string::npos)
         return false;
     static const char *prefixes[] = {
-        "/download0/ProsperoAI/sessions/", "/download0/ProsperoAI/work/text/",
+        "/download0/ProsperoAI/work/sessions/", "/download0/ProsperoAI/sessions/",
+        "/download0/ProsperoAI/work/text/",
         "/download0/ProsperoAI/work/image/", "/download0/ProsperoAI/work/audio/",
         "/download0/ProsperoAI/work/voice/"};
     for (const char *prefix : prefixes)
@@ -1518,6 +1725,10 @@ void handle_connection(const NetApi &api, int sock)
         handle_runtime_settings(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/settings/runtime") == 0)
         handle_runtime_settings(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/search") == 0)
+        handle_search(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/fetch") == 0)
+        handle_fetch(api, sock, body);
     else if (std::strcmp(path, "/api/voices/chatterbox/custom") == 0 &&
              (std::strcmp(method, "GET") == 0 || std::strcmp(method, "POST") == 0))
         handle_chatterbox_custom_voice(api, sock, method, body, request_body_size);
