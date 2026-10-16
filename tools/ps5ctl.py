@@ -5,6 +5,7 @@
   ps5ctl.py status
   ps5ctl.py doctor                     check environment and bundled payloads, offline
   ps5ctl.py service restore            restore missing FTP/control/klog/shell services
+  ps5ctl.py bringup                     wake the console and run the P5 Manager Autoload chain
   ps5ctl.py payload PATH.elf            send an ELF to the payload port (9021)
   ps5ctl.py ftp ls [REMOTE]             list a directory over the homebrew FTP server
   ps5ctl.py ftp get REMOTE LOCAL      download a binary file without text decoding
@@ -20,8 +21,8 @@
 
 Hosts and ports come from the environment: PS5_HOST (required, your console's address,
 e.g. <PS5-IP>), PS5_PAYLOAD_PORT (9021), PS5_FTP_PORT (2120), PS5_KLOG_PORT (3232),
-P5_MANAGER (optional development-host URL), P5_SESSION (Remote Play session id,
-both needed only for shot). Local settings load from ignored .env.ps5.local;
+P5_MANAGER (optional development-host URL, needed for bringup and shot), P5_SESSION
+(Remote Play session id, needed only for shot). Local settings load from ignored .env.ps5.local;
 explicit environment variables take precedence. There is no console address fallback.
 
 Deleting a title from /data/homebrew removes its files only. The console's title registration
@@ -38,6 +39,7 @@ import pathlib
 import socket
 import sys
 import time
+import urllib.error
 import urllib.request
 
 # Also importable by path (tests), not only as a script run from tools/.
@@ -80,7 +82,7 @@ def cmd_doctor(_args):
     print("PS5_HOST:", "configured" if HOST else "missing (required)")
     title = os.environ.get("PROSPERO_TEST_TITLE", "")
     print("PROSPERO_TEST_TITLE:", title or "unset (needed for test builds/deployment/benchmarks)")
-    print("P5_MANAGER:", "configured (optional)" if MANAGER else "unset (optional; screenshots only)")
+    print("P5_MANAGER:", "configured (optional)" if MANAGER else "unset (optional; needed for bringup and screenshots)")
     print("P5_SESSION:", "configured" if SESSION else "unset (needed only for screenshots)")
     for name in payload_manifest():
         try:
@@ -115,6 +117,116 @@ def cmd_service(args):
                     raise SystemExit(f"{name}: payload sent, but port {port} did not become available")
                 time.sleep(0.2)
     return 0
+
+
+# The Autoload template in P5 Manager that wakes the console over Remote Play and
+# then walks the Guide loader to kstuff, ShadowMountPlus and zftpd. Its steps are
+# saved once as a sequence of our own so a command never installs a watcher that
+# would steer the console by itself.
+BRINGUP_TEMPLATE = "wake-userguide-jailbreak-autoload"
+BRINGUP_NAME = "ProsperoAI bring-up"
+RUN_FINISHED = ("completed", "failed", "cancelled")
+
+
+def manager_json(path, payload=None, timeout=30):
+    """One P5 Manager API call. Passing a payload makes it a POST."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(
+        f"{MANAGER}/api{path}", data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as error:
+        raise SystemExit(f"p5 manager {path}: HTTP {error.code} "
+                         f"{error.read(2000).decode(errors='replace')}") from None
+    except OSError as error:
+        raise SystemExit(f"p5 manager {path}: {error}") from None
+    return json.loads(body) if body else {}
+
+
+def bringup_profile():
+    """The P5 Manager profile for this console. Waking needs its Remote Play pairing."""
+    for profile in manager_json("/profiles"):
+        if profile.get("ip_address") == HOST:
+            return profile
+    raise SystemExit(f"p5 manager has no console profile for {HOST}. Pair the console on "
+                     "its Remote Play tab first: waking it needs that pairing's regist key.")
+
+
+def bringup_sequence(profile):
+    """The saved Autoload sequence for this console, built from the template once."""
+    for sequence in manager_json("/sequences"):
+        if sequence.get("name") == BRINGUP_NAME and sequence.get("profile_id") == profile["id"]:
+            return sequence["id"]
+    for template in manager_json("/sequences/templates/list"):
+        if (template.get("store") or {}).get("id") == BRINGUP_TEMPLATE:
+            created = manager_json("/sequences", {"profileId": profile["id"],
+                                                  "name": BRINGUP_NAME,
+                                                  "steps": template["steps"]})
+            print(f"Autoload sequence {created['id']} created from {BRINGUP_TEMPLATE}")
+            return created["id"]
+    raise SystemExit(f"p5 manager offers no Autoload template {BRINGUP_TEMPLATE}. Update p5 "
+                     f"manager, or build the chain by hand and save it as {BRINGUP_NAME!r}.")
+
+
+def bringup_run(sequence_id, timeout):
+    """Run the chain, print its log as it arrives, and fail unless it completed."""
+    run_id = manager_json(f"/sequences/{sequence_id}/run", {})["run_id"]
+    printed = 0
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            state = manager_json(f"/sequences/runs/{run_id}")
+        except KeyboardInterrupt:
+            manager_json(f"/sequences/runs/{run_id}/cancel", {})
+            raise SystemExit(f"interrupted; Autoload run {run_id} cancelled") from None
+        log = state.get("log") or ""
+        if len(log) > printed:
+            sys.stdout.write(log[printed:])
+            sys.stdout.flush()
+            printed = len(log)
+        status = state.get("status")
+        if status in RUN_FINISHED:
+            break
+        if time.monotonic() > deadline:
+            manager_json(f"/sequences/runs/{run_id}/cancel", {})
+            raise SystemExit(f"Autoload run {run_id} did not finish within "
+                             f"{timeout:.0f}s; cancelled")
+        time.sleep(1)
+    if status != "completed":
+        raise SystemExit(f"Autoload run {run_id} {status}: "
+                         f"{state.get('error') or 'see the log above'}")
+
+
+def wait_for_port(name, port, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((HOST, port), timeout=2):
+                print(f"{name}: port {port} open")
+                return
+        except OSError as error:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"{name}: port {port} did not become available within "
+                                 f"{timeout:.0f}s ({error})") from None
+            time.sleep(1)
+
+
+def cmd_bringup(args):
+    if not MANAGER:
+        print("set optional P5_MANAGER to the P5 Manager URL before using bringup",
+              file=sys.stderr)
+        return 2
+    profile = bringup_profile()
+    print(f"console {profile.get('name') or HOST} at {HOST}, p5 manager profile {profile['id']}")
+    bringup_run(bringup_sequence(profile), args.timeout)
+    wait_for_port("payload loader", PAYLOAD_PORT, args.port_timeout)
+    wait_for_port("ftp", FTP_PORT, args.port_timeout)
+    if args.skip_services:
+        print("agent, klog and shell not restored (--skip-services)")
+        return 0
+    return cmd_service(argparse.Namespace(name="restore"))
 
 
 def ftp_connect():
@@ -460,6 +572,16 @@ def main(argv=None):
     sub.add_parser("doctor", help="check local environment and bundled payload integrity; no network calls")
     service = sub.add_parser("service", help="restore missing services using verified repository payloads")
     service.add_argument("name", choices=("restore", *payload_manifest()))
+    bringup = sub.add_parser("bringup", help="wake the console over Remote Play and run the P5 "
+                                             "Manager Autoload chain (Guide loader, kstuff, "
+                                             "ShadowMountPlus, zftpd), then restore the services "
+                                             "ProsperoAI needs")
+    bringup.add_argument("--timeout", type=float, default=600,
+                         help="seconds to wait for the Autoload run (default 600)")
+    bringup.add_argument("--port-timeout", type=float, default=60,
+                         help="seconds to wait for the loader and FTP ports (default 60)")
+    bringup.add_argument("--skip-services", action="store_true",
+                         help="stop after the Autoload chain, leaving agent, klog and shell alone")
     p = sub.add_parser("payload")
     p.add_argument("path")
     p.add_argument("--timeout", type=float, default=20)
@@ -523,7 +645,7 @@ def main(argv=None):
     sh2.add_argument("title_id", nargs="?", default="")
     sh2.add_argument("--yes", action="store_true")
     args = parser.parse_args(argv)
-    handlers = {"doctor": cmd_doctor, "service": cmd_service, "agent": cmd_agent, "cat": cmd_cat, "trace": cmd_trace, "shadow": cmd_shadow, "status": cmd_status, "payload": cmd_payload, "ftp": cmd_ftp,
+    handlers = {"doctor": cmd_doctor, "service": cmd_service, "bringup": cmd_bringup, "agent": cmd_agent, "cat": cmd_cat, "trace": cmd_trace, "shadow": cmd_shadow, "status": cmd_status, "payload": cmd_payload, "ftp": cmd_ftp,
                 "title": cmd_title, "klog": cmd_klog, "shot": cmd_shot,
                 "shell": cmd_shell, "ps": cmd_ps, "launch": cmd_launch}
     return handlers[args.command](args)

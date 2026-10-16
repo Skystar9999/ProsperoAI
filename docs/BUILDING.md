@@ -137,8 +137,8 @@ ELF headers, byte counts and SHA-256 hashes. `PS5_HOST` is required for console 
 `PROSPERO_TEST_TITLE` is required for test-build and benchmark workflows.
 
 P5 Manager is **optional**. Direct console commands, deployments and backend HTTP tests
-work without it. Set `P5_MANAGER` to its URL on the development computer only when using
-Remote Play. There is no assumed Manager address. For screenshots, also set `P5_SESSION`
+work without it. Set `P5_MANAGER` to its URL on the development computer when using
+Remote Play or `ps5ctl.py bringup`. There is no assumed Manager address. For screenshots, also set `P5_SESSION`
 to the active Remote Play session ID. For a locally installed Manager, the URL may be
 `http://127.0.0.1:3001`; it is not the PS5 app server on port 11434.
 
@@ -148,7 +148,17 @@ ShadowMount 10101, kernel log 3232 and shell 2323. `PS5_FTP_PORT` configures `ps
 actually configured on the console; setting a client variable does not change a payload's
 listening port.
 
-After a reboot, the loader must already be available. Restore only missing services:
+A console in rest mode, or one whose ELF loader is closed, has nothing to restore from yet.
+`bringup` covers that case through P5 Manager: it wakes the console over Remote Play, runs
+the Autoload chain that walks the Guide loader to kstuff, ShadowMountPlus and zftpd, and then
+restores the services above. It needs `P5_MANAGER` and a console paired on P5 Manager's
+Remote Play tab, and it prints the chain's log as it runs.
+
+```bash
+python3 tools/ps5ctl.py bringup
+```
+
+With the loader already available, restore only the missing services:
 
 ```bash
 python3 tools/ps5ctl.py service restore

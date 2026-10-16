@@ -84,8 +84,8 @@ port 2323), process list, launch and screenshots.
   and `PROSPERO_TEST_TITLE`, then `source tools/ps5-env.sh` before builds or benchmarks.
   `ps5ctl.py` also loads the local file automatically; explicit environment variables win.
   Run `python3 tools/ps5ctl.py doctor` to verify configuration and payload hashes offline.
-  `P5_MANAGER` is optional and has no default. Set it to the development host's URL only
-  for Remote Play; `P5_SESSION` is needed only for screenshots. Neither is required for
+  `P5_MANAGER` is optional and has no default. Set it to the development host's URL for
+  Remote Play and for `bringup`; `P5_SESSION` is needed only for screenshots. Neither is required for
   deployment, launching, klog or direct app HTTP tests. Never assume P5 Manager runs on PS5.
 - All standard service ELFs are bundled in `tools/payloads/` with exact sizes, SHA-256,
   upstream sources and licenses in its `manifest.json`. Use
@@ -99,7 +99,10 @@ port 2323), process list, launch and screenshots.
   the payload loader (9021) may be listening while FTP (2120) is not. Restore missing services
   from the repository with `python3 tools/ps5ctl.py service restore`. This starts the FTP
   service before the control, klog and shell services. The loader itself must already be
-  available. These resident payloads are separate from the title under test and do not
+  available; when it is not, or the console is in rest mode,
+  `python3 tools/ps5ctl.py bringup` wakes the console over Remote Play, runs P5 Manager's
+  Autoload chain (Guide loader, kstuff, ShadowMountPlus, zftpd) and then restores these
+  services. It needs `P5_MANAGER` and a console paired on P5 Manager's Remote Play tab. These resident payloads are separate from the title under test and do not
   survive a reboot.
 - If `agent status` / `agent procs` returns connection refused on port 9111, run
   `python3 tools/ps5ctl.py service agent`, then retry the agent command.

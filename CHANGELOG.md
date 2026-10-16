@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `tools/ps5ctl.py bringup` brings a console up from rest mode in one command: it wakes it
+  over Remote Play through P5 Manager, runs the Autoload chain that walks the Guide loader to
+  kstuff, ShadowMountPlus and zftpd, prints that run's log as it happens, proves the loader
+  and FTP ports open, and then restores the control, kernel log and shell services the app's
+  own tooling needs.
+
 ## 01.006.000
 
 - Text, image, sound and speech generation now use one pinned upstream llama.cpp/GGML Vulkan
