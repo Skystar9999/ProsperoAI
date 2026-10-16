@@ -26,6 +26,7 @@ class HttpApiTests(unittest.TestCase):
                         "-I"+str(ROOT / "search-engine/include"), "-I"+str(ROOT / "search-engine/src"),
                         "-I"+str(ROOT / ".deps/llama.cpp/vendor"),
                         str(ROOT / "tests/http_api_harness.cpp"), str(ROOT / "src/session_store.cpp"),
+                        str(ROOT / "src/debug_log.cpp"),
                         str(ROOT / "search-engine/src/query.cpp"),
                         str(ROOT / "search-engine/src/providers.cpp"),
                         str(ROOT / "search-engine/src/scan.cpp"),
@@ -228,7 +229,11 @@ class HttpApiTests(unittest.TestCase):
     def test_model_memory_status(self):
         head, body = self.request("/api/models/memory")
         self.assertIn("200 OK", head)
-        self.assertEqual(json.loads(body), {"loaded": False, "id": "", "name": ""})
+        self.assertEqual(json.loads(body), {
+            "loaded": False, "id": "", "name": "", "vulkan_heap_bytes": 0,
+            "largest_direct_block_bytes": 0, "flexible_free_bytes": 0,
+            "estimate_confidence": "live-memory-snapshot",
+        })
         self.assertIn("401 Unauthorized", self.request("/api/models/memory", key="secret")[0])
 
     def test_models_and_selection(self):

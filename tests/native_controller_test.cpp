@@ -1,5 +1,6 @@
 // Host checks for real controller ownership, persistence, and multilingual layout.
 #include "native_app.hpp"
+#include "model_manager.hpp"
 #include "gfx/font.hpp"
 #include <algorithm>
 #include <cassert>
@@ -306,6 +307,7 @@ int main(int argc, char **argv)
         assert(app.state().stats.generated_tokens == 65536);
     }
     {
+        prospero::model_manager::publish("", prospero::model_manager::Stage::none);
         prospero::App app;
         assert(app.initialize());
         settle(app);

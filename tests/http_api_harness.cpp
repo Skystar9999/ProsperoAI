@@ -13,6 +13,35 @@
 
 extern "C"
 {
+    std::int64_t sceKernelGetDirectMemorySize()
+    {
+        return 0;
+    }
+    int sceKernelDirectMemoryQuery(std::int64_t, int, void *, std::size_t)
+    {
+        return -1;
+    }
+    int sceKernelAvailableDirectMemorySize(std::int64_t, std::int64_t, std::size_t,
+                                           std::int64_t *start, std::size_t *bytes)
+    {
+        *start = 0;
+        *bytes = 0;
+        return -1;
+    }
+    int sceKernelAvailableFlexibleMemorySize(std::size_t *bytes)
+    {
+        *bytes = 0;
+        return -1;
+    }
+}
+
+std::uint64_t gpt_runtime_vulkan_heap_bytes()
+{
+    return 0;
+}
+
+extern "C"
+{
     int sceKernelOpen(const char *path, int, int)
     {
         return open(path, O_RDONLY);
