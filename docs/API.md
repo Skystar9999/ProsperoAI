@@ -95,6 +95,10 @@ Conversation responses include boolean `pinned` and `archived` fields. Existing 
 `409 Conflict` when another download is active or the request cannot be started. The web
 workspace calls these routes directly.
 
+Diagnostic journal rows include a unique `operation_id`, UTC timestamp, operation name, model ID
+when available, and a fixed error code. Prompts, generated text, credentials, and runtime error
+strings are not stored.
+
 Repository browse results include each GGUF file's repository size and a rough file-size fit
 badge. That badge is only a heuristic: GGUF size does not include context/KV
 cache or all runtime allocations. `/api/models/estimate` reports the installed file's size,

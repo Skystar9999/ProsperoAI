@@ -572,9 +572,12 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
     const unsigned batch_tokens = request_option(request_body, "num_batch", 0, 2048);
     const unsigned ubatch_tokens = request_option(request_body, "num_ubatch", 0, 2048);
     gpt_runtime_stats_t stats{};
+    const auto operation_id = prospero::debug::begin_operation("api-generation", model);
     const bool ok =
         run_generation(messages, 1, response_text.data(), response_text.size(), max_tokens, &stats,
                        model, context_tokens, batch_tokens, ubatch_tokens);
+    prospero::debug::event(ok ? "api-generation-completed" : "api-generation-failed", model,
+                           ok ? "" : "runtime-generation-failed", operation_id);
 
     char created_at[32];
     iso8601_now(created_at, sizeof(created_at));
@@ -630,12 +633,15 @@ void handle_chat(const NetApi &api, int sock, const char *request_body)
 
     std::vector<char> response_text(kResponseTextCapacity);
     gpt_runtime_stats_t stats{};
+    const auto operation_id = prospero::debug::begin_operation("api-generation", model);
     const bool ok = run_generation(
         messages, message_count, response_text.data(), response_text.size(),
         request_option(request_body, "num_predict", prospero_generation::MaxOutputTokens,
                        prospero_generation::MaxOutputTokens),
         &stats, model,
         request_option(request_body, "num_ctx", 0, prospero_generation::MaxContextTokens));
+    prospero::debug::event(ok ? "api-generation-completed" : "api-generation-failed", model,
+                           ok ? "" : "runtime-generation-failed", operation_id);
 
     char created_at[32];
     iso8601_now(created_at, sizeof(created_at));
@@ -1457,12 +1463,19 @@ void handle_model_selection(const NetApi &api, int sock, const char *method,
     }
     const bool prepare = request.value("prepare", true);
     const std::string id = request["id"].get<std::string>();
+    const auto operation_id = prepare
+                                  ? prospero::debug::begin_operation("api-model-preparation", id.c_str())
+                                  : 0;
     std::string error;
     if (!prospero::model_manager::select(id.c_str(), prepare, true, &error))
     {
+        const char *error_code = error.find("busy") != std::string::npos
+                                     ? "runtime-busy"
+                                 : error.find("not installed") != std::string::npos
+                                     ? "model-not-installed"
+                                     : "selection-or-prepare-failed";
         prospero::debug::event("api-model-selection-failed", id.c_str(),
-                               error.find("busy") != std::string::npos ? "runtime-busy"
-                                                                       : "selection-failed");
+                               error_code, operation_id);
         const auto response = nlohmann::json{{"error", error}}.dump();
         const char *status = error.find("not installed") != std::string::npos
                                  ? "404 Not Found"
@@ -1473,7 +1486,8 @@ void handle_model_selection(const NetApi &api, int sock, const char *method,
         return;
     }
     const auto selected = prospero::model_manager::snapshot();
-    prospero::debug::event(prepare ? "api-model-ready" : "api-model-selected", id.c_str(), "");
+    prospero::debug::event(prepare ? "api-model-ready" : "api-model-selected", id.c_str(), "",
+                           operation_id);
     if (prepare)
     {
         const auto settings = prospero_settings::get();

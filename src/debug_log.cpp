@@ -37,6 +37,15 @@ std::string logs_folder;
 std::FILE *file;
 long written;
 bool full;
+std::uint64_t journal_sequence = 0;
+
+std::uint64_t next_operation_id()
+{
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    return static_cast<std::uint64_t>(micros) * 1024ULL + (++journal_sequence & 1023ULL);
+}
 
 double seconds()
 {
@@ -171,7 +180,21 @@ void system_line(const char *text)
     write("sys", text);
 }
 
-void event(const char *operation, const char *model_id, const char *error_code)
+OperationId begin_operation(const char *operation, const char *model_id)
+{
+    OperationId id = 0;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        id = next_operation_id();
+    }
+    std::string started = operation ? operation : "operation";
+    started += "-started";
+    event(started.c_str(), model_id, "", id);
+    return id;
+}
+
+void event(const char *operation, const char *model_id, const char *error_code,
+           OperationId operation_id)
 {
     std::lock_guard<std::mutex> lock(mutex);
     if (logs_folder.empty())
@@ -199,9 +222,13 @@ void event(const char *operation, const char *model_id, const char *error_code)
     };
     if (std::FILE *journal = std::fopen(path.c_str(), "ab"))
     {
+        if (!operation_id)
+            operation_id = next_operation_id();
         std::fprintf(journal,
-                     "{\"time\":%lld,\"operation\":\"%s\",\"model\":\"%s\",\"error\":\"%s\"}\n",
-                     static_cast<long long>(std::time(nullptr)), safe(operation).c_str(),
+                     "{\"time\":%lld,\"operation_id\":%llu,\"operation\":\"%s\","
+                     "\"model\":\"%s\",\"error\":\"%s\"}\n",
+                     static_cast<long long>(std::time(nullptr)),
+                     static_cast<unsigned long long>(operation_id), safe(operation).c_str(),
                      safe(model_id).c_str(), safe(error_code).c_str());
         std::fclose(journal);
     }
@@ -236,11 +263,13 @@ void model_memory_sample(const char *model_id, unsigned context_tokens, unsigned
     if (std::FILE *journal = std::fopen(path.c_str(), "ab"))
     {
         std::fprintf(journal,
-                     "{\"time\":%lld,\"operation\":\"model-memory-sample\","
+                     "{\"time\":%lld,\"operation_id\":%llu,"
+                     "\"operation\":\"model-memory-sample\","
                      "\"model\":\"%s\",\"error\":\"\",\"context_tokens\":%u,"
                      "\"output_limit\":%u,\"thinking\":%s,"
                      "\"vulkan_heap_bytes\":%llu,\"flexible_free_bytes\":%llu}\n",
-                     static_cast<long long>(std::time(nullptr)), safe(model_id).c_str(),
+                     static_cast<long long>(std::time(nullptr)),
+                     static_cast<unsigned long long>(next_operation_id()), safe(model_id).c_str(),
                      context_tokens, output_limit, thinking ? "true" : "false",
                      static_cast<unsigned long long>(vulkan_heap_bytes),
                      static_cast<unsigned long long>(flexible_free_bytes));

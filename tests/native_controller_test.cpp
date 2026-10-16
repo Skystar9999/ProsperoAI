@@ -1,5 +1,6 @@
 // Host checks for real controller ownership, persistence, and multilingual layout.
 #include "native_app.hpp"
+#include "debug_log.hpp"
 #include "model_manager.hpp"
 #include "gfx/font.hpp"
 #include <algorithm>
@@ -193,7 +194,8 @@ bool archive_media(const char *, unsigned, const char *, const char *, char *, s
 
 int main(int argc, char **argv)
 {
-    assert(argc == 3);
+    assert(argc == 4);
+    prospero::debug::start(argv[3]);
     std::remove(PROSPERO_SETTINGS_PATH);
     {
         std::ofstream settings(PROSPERO_SETTINGS_PATH);
@@ -380,6 +382,29 @@ int main(int argc, char **argv)
     }
     assert(!prospero::load_image_preview(image_path));
     std::remove(image_path.c_str());
+    std::ifstream journal(std::string(argv[3]) + "/events.jsonl");
+    const std::string events(std::istreambuf_iterator<char>(journal), {});
+    assert(events.find("\"operation_id\":") != std::string::npos);
+    const auto operation_id_for = [&](const std::string &operation)
+    {
+        const auto operation_pos = events.find("\"operation\":\"" + operation + "\"");
+        assert(operation_pos != std::string::npos);
+        const auto id_pos = events.rfind("\"operation_id\":", operation_pos);
+        assert(id_pos != std::string::npos);
+        const auto value_pos = id_pos + std::string("\"operation_id\":").size();
+        const auto value_end = events.find(',', value_pos);
+        assert(value_end != std::string::npos);
+        return events.substr(value_pos, value_end - value_pos);
+    };
+    const auto failed_generation_id = operation_id_for("generation-save-failed");
+    assert(events.find("\"operation_id\":" + failed_generation_id +
+                       ",\"operation\":\"native-generation-started\"") != std::string::npos);
+    assert(events.find("\"error\":\"runtime-generation-failed\"") != std::string::npos);
+    assert(events.find("\"error\":\"user-message-save-failed\"") != std::string::npos);
+    assert(events.find("\"operation\":\"generation-save-failed\"") != std::string::npos);
+    assert(events.find("\"error\":\"assistant-message-save-failed\"") != std::string::npos);
+    assert(events.find("A question that fails") == std::string::npos);
+    assert(events.find("Hello, 世界.") == std::string::npos);
     std::remove(PROSPERO_SETTINGS_PATH);
     std::puts("Controller: 500 models, worker ownership, switching, session restore, retry, "
               "persistence and Unicode passed.");

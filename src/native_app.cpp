@@ -709,6 +709,7 @@ void App::work()
 {
     const auto began = std::chrono::steady_clock::now();
     const Job job = job_;
+    diagnostic_error_.clear();
     switch (job_)
     {
     case Job::Discover:
@@ -768,6 +769,9 @@ void App::work()
         break;
     }
     case Job::Select:
+    {
+        const auto operation_id = prospero::debug::begin_operation(
+            "model-preparation", result_.models[static_cast<std::size_t>(argument_)].id.c_str());
         result_.ready = model_manager::select(
             result_.models[static_cast<std::size_t>(argument_)].id.c_str(), true);
         result_.preparing = false;
@@ -778,8 +782,8 @@ void App::work()
                 if (result_.models[i].id == selected.model_id)
                     result_.selected_model = static_cast<int>(i);
             prospero::debug::event(result_.ready ? "model-ready" : "model-failed",
-                                   selected.model_id.c_str(),
-                                   result_.ready ? "" : "prepare-failed");
+                                   selected.model_id.c_str(), result_.ready ? "" : "prepare-failed",
+                                   operation_id);
 #ifdef PS5_LLAMA_VULKAN
             if (result_.ready)
             {
@@ -816,6 +820,7 @@ void App::work()
         result_.status = result_.ready ? "Ready when you are" : model_manager::snapshot().error;
         model_manager_revision_ = model_manager::snapshot().revision;
         break;
+    }
     case Job::Open:
     {
         prospero_session::Record record{};
@@ -829,6 +834,8 @@ void App::work()
         }
         messages.resize(record.message_count);
         const int index = model_of(result_, &record);
+        const auto operation_id =
+            prospero::debug::begin_operation("conversation-open", record.model_id);
         result_.session = record;
         result_.messages = std::move(messages);
         refresh_images();
@@ -837,7 +844,11 @@ void App::work()
         result_.ready = index >= 0 && model_manager::select(record.model_id, true);
         prospero::debug::event(result_.ready ? "conversation-model-ready"
                                              : "conversation-model-failed",
-                               record.model_id, result_.ready ? "" : "prepare-failed");
+                               record.model_id,
+                               result_.ready ? ""
+                               : index < 0   ? "model-not-installed"
+                                             : "prepare-failed",
+                               operation_id);
 #ifdef PS5_LLAMA_VULKAN
         if (result_.ready)
         {
@@ -888,10 +899,31 @@ void App::work()
         }
         break;
     case Job::Generate:
+        diagnostic_operation_id_ =
+            prospero::debug::begin_operation("native-generation", result_.session.model_id);
         generate();
-        prospero::debug::event(result_.stats_valid ? "generation-completed" : "generation-failed",
-                               result_.session.model_id,
-                               result_.stats_valid ? "" : "runtime-or-save-failed");
+        {
+            const char *model_id = result_.session.model_id;
+            if (!model_id[0] && result_.selected_model >= 0)
+                model_id =
+                    result_.models[static_cast<std::size_t>(result_.selected_model)].id.c_str();
+            if (!result_.stats_valid)
+                prospero::debug::event(diagnostic_error_ == "web-search-disabled"
+                                           ? "generation-rejected"
+                                           : "generation-failed",
+                                       model_id,
+                                       diagnostic_error_.empty() ? "runtime-generation-failed"
+                                                                 : diagnostic_error_.c_str(),
+                                       diagnostic_operation_id_);
+            else if (result_.unsaved)
+                prospero::debug::event("generation-save-failed", model_id,
+                                       diagnostic_error_.empty() ? "assistant-message-save-failed"
+                                                                 : diagnostic_error_.c_str(),
+                                       diagnostic_operation_id_);
+            else
+                prospero::debug::event("generation-completed", model_id, "",
+                                       diagnostic_operation_id_);
+        }
         break;
     case Job::Save:
         result_.unsaved = !prospero_session::save(&result_.session, result_.messages.data(),
@@ -1003,11 +1035,13 @@ void App::generate()
     result_.unsaved = true;
     result_.stats_valid = false;
     result_.notice = Notice::SaveFailed;
+    diagnostic_error_ = "runtime-generation-failed";
     if (!result_.session.id[0])
     {
         if (!prospero_session::create(&result_.session, model.id.c_str(), model.name.c_str(),
                                       model.purpose.c_str()))
         {
+            diagnostic_error_ = "conversation-create-failed";
             result_.status =
                 "Could not create a conversation. Check available storage, then retry.";
             return;
@@ -1019,6 +1053,7 @@ void App::generate()
     if (!prospero_session::save(&result_.session, result_.messages.data(),
                                 static_cast<unsigned>(result_.messages.size())))
     {
+        diagnostic_error_ = "user-message-save-failed";
         result_.status = "Could not save your message. Check available storage, then retry.";
         return;
     }
@@ -1040,6 +1075,7 @@ void App::generate()
     {
         if (!runtime.web_search)
         {
+            diagnostic_error_ = "web-search-disabled";
             result_.notice = Notice::GenerationFailed;
             result_.status = "Enable search in Settings before using /search or /fetch.";
             refresh_sessions();
@@ -1201,12 +1237,14 @@ void App::generate()
     result_.stream.clear();
     if (status)
     {
+        diagnostic_error_ = "runtime-generation-failed";
         result_.notice = Notice::GenerationFailed;
         result_.status = response[0] ? response.data()
                                      : "Generation failed. Your message is saved; you can retry.";
         refresh_sessions();
         return;
     }
+    diagnostic_error_.clear();
     prospero_session::OutputMetadata metadata;
     metadata.model_id = model.id.c_str();
     metadata.model_name = model.name.c_str();
@@ -1272,6 +1310,11 @@ void App::generate()
     result_.status = !saved ? "Response is shown, but could not be saved. Check available storage."
                      : !archived ? "Response saved, but its work export could not be archived."
                                  : "Saved on your console";
+    if (!saved)
+        diagnostic_error_ = "assistant-message-save-failed";
+    if (!archived)
+        prospero::debug::event("media-archive-failed", model.id.c_str(), "output-archive-failed",
+                               diagnostic_operation_id_);
     refresh_sessions();
 }
 } // namespace prospero

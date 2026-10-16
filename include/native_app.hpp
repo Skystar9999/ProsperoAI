@@ -4,6 +4,7 @@
 #include "gpt_runtime.hpp"
 #include "session_store.hpp"
 #include "media_preview.hpp"
+#include "debug_log.hpp"
 #include <array>
 #include <atomic>
 #include <string>
@@ -154,6 +155,8 @@ class App
     unsigned argument_ = 0;
     std::string session_id_;
     std::string audio_path_;
+    std::string diagnostic_error_;
+    prospero::debug::OperationId diagnostic_operation_id_ = 0;
     std::vector<Notice> notices_;
     bool running_ = false, preferences_dirty_ = false;
     std::atomic<bool> done_{false};

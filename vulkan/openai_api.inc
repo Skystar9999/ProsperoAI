@@ -631,7 +631,9 @@ void api_stream_progress(const char *text) {
 void handle_openai_chat(const NetApi &api, int sock, const char *body) {
     ApiStream stream{&api, sock, "", "", static_cast<long long>(std::time(nullptr))};
     bool generated = false;
+    bool generation_completed = false;
     std::string model_for_event;
+    prospero::debug::OperationId operation_id = 0;
     try {
         auto request = parse_api_chat(ApiJson::parse(body));
         model_for_event = request.model;
@@ -668,11 +670,13 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
         settings.grammar = request.structured ? grammar.c_str() : nullptr;
         active_api_stream = request.stream && !request.structured ? &stream : nullptr;
         struct ClearStream { ~ClearStream() { active_api_stream = nullptr; } } clear;
+        operation_id = prospero::debug::begin_operation("openai-generation", request.model.c_str());
         generated = true;
         const int result = gpt_runtime_generate(messages.data(), messages.size(), settings,
             output.data(), output.size(), &stats, active_api_stream ? api_stream_progress : nullptr);
         if (result != 0) throw ApiError("400 Bad Request", "generation_failed", output[0] ? output.data() : "Model generation failed.");
-        prospero::debug::event("api-generation-completed", request.model.c_str(), "");
+        generation_completed = true;
+        prospero::debug::event("api-generation-completed", request.model.c_str(), "", operation_id);
         auto message = api_assistant(request, output.data(), stream.id);
         if (!request.output_session_id.empty() && !message.contains("tool_calls") &&
             std::strcmp(gpt_runtime_model_purpose(selected), "text-to-text") == 0) {
@@ -733,7 +737,13 @@ void handle_openai_chat(const NetApi &api, int sock, const char *body) {
         const auto *specific = dynamic_cast<const ApiError *>(&error);
         const char *status = specific ? specific->status : generated ? "502 Bad Gateway" : "400 Bad Request";
         const char *code = specific ? specific->code : generated ? "invalid_model_output" : "invalid_request";
-        prospero::debug::event("api-generation-failed", model_for_event.c_str(), code);
+        if (generated && !generation_completed)
+            prospero::debug::event("api-generation-failed", model_for_event.c_str(),
+                                   specific ? specific->code : "runtime-generation-failed",
+                                   operation_id);
+        else if (!generated && specific && std::strcmp(specific->code, "model_not_found") == 0)
+            prospero::debug::event("api-generation-rejected", model_for_event.c_str(),
+                                   "model-not-installed");
         if (stream.started) {
             stream.event({{"error", {{"message", error.what()}, {"type", "server_error"}, {"code", code}}}});
             const char done[] = "data: [DONE]\n\n"; send_all(api, sock, done, sizeof(done)-1);

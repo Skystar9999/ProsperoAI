@@ -29,7 +29,10 @@ void line(const char *tag, const char *format, ...) __attribute__((format(printf
 // A line the app or a runtime printed for the console's own log.
 void system_line(const char *text);
 // Persistent bounded journal. Arguments must be identifiers/codes, never user content.
-void event(const char *operation, const char *model_id, const char *error_code);
+using OperationId = std::uint64_t;
+OperationId begin_operation(const char *operation, const char *model_id);
+void event(const char *operation, const char *model_id, const char *error_code,
+           OperationId operation_id = 0);
 // Runtime snapshots contain measurements and settings only, never user content.
 void model_memory_sample(const char *model_id, unsigned context_tokens, unsigned output_limit,
                          bool thinking,
