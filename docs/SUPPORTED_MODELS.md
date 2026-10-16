@@ -23,6 +23,11 @@ SHA-256 hashes during download.
 The table is the complete list of curated presets in this build. Curated media presets include
 their required model files and use the image, audio, or speech runtime already in the app.
 
+Music and sound generation uses a default clip length (8 s for ACE-Step, 4 s for Stable Audio 3).
+Set `audio_duration_sec` (1-300, `0` restores the defaults) through `POST /api/settings/runtime`
+or the `audio_duration_sec=` line in the settings file to request a longer clip; the planner in
+audio.cpp still has the final say and may clamp a request the loaded model cannot serve.
+
 ## Other GGUF text models
 
 ProsperoAI can also download and discover standalone `.gguf` text models. The pinned

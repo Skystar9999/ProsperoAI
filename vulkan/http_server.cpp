@@ -995,6 +995,15 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                     valid = true;
                 }
             }
+            else if (it.key() == "audio_duration_sec" && it.value().is_number_unsigned())
+            {
+                const auto seconds = it.value().get<unsigned>();
+                if (prospero_settings::valid_audio_duration_sec(seconds))
+                {
+                    p.audio_duration_sec = seconds;
+                    valid = true;
+                }
+            }
             if (!valid)
             {
                 openai_error(api, sock, "400 Bad Request", "invalid_settings",
@@ -1017,6 +1026,7 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                        {"kv", prospero_settings::kv_name(p.kv)},
                        {"thinking", p.thinking},
                        {"idle_unload_minutes", p.idle_unload_minutes},
+                       {"audio_duration_sec", p.audio_duration_sec},
                        {"kokoro_voice", prospero_voice::runtime_voice(false, p.kokoro_voice)->id},
                        {"chatterbox_voice", prospero_voice::runtime_voice(true, p.chatterbox_voice)->id},
                        {"chatterbox_language", prospero_language::chatterbox_language(p.chatterbox_language).code},

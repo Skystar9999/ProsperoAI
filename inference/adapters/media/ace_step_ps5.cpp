@@ -4,6 +4,7 @@
 #include "audiocpp.h"
 #include "../../../include/generated_output_path.hpp"
 #include "../../../include/direct_memory.hpp"
+#include "../../../include/runtime_settings.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -170,8 +171,11 @@ extern "C" int ps5_ace_step_generate(const char *root, const char *prompt,
             break;
         }
         request = audiocpp_request_create();
+        char duration[16];
+        const unsigned configured_duration = prospero_settings::get().audio_duration_sec;
+        std::snprintf(duration, sizeof(duration), "%u", configured_duration ? configured_duration : 8u);
         if (!request || audiocpp_request_set_text(request, prompt, nullptr) != AUDIOCPP_OK ||
-            audiocpp_request_set_option(request, "duration_sec", "8") != AUDIOCPP_OK ||
+            audiocpp_request_set_option(request, "duration_sec", duration) != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "seed", "42") != AUDIOCPP_OK)
         {
             log_error("request setup failed");
