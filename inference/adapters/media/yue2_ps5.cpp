@@ -209,6 +209,11 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
             audiocpp_request_set_option(request, "style", prompt) != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "cot", "off") != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "seed", seed) != AUDIOCPP_OK ||
+            // Cap the semantic stream (~12.5 tokens/s audio) so the VAE decode
+            // buffer stays inside the ps5pro graph arena; uncapped runs emit
+            // multi-minute streams that fail allocation at decode time.
+            audiocpp_request_set_option(request, "semantic_max_tokens", "1500") !=
+                AUDIOCPP_OK ||
             (!settings.audio_lyrics.empty() &&
              audiocpp_request_set_option(request, "lyrics", settings.audio_lyrics.c_str()) !=
                  AUDIOCPP_OK))
