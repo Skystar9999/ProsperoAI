@@ -45,5 +45,6 @@ h2 button{padding:3px 9px;font-size:13px}
 .track .del{background:#3a2630;color:var(--err);border:1px solid var(--line);border-radius:6px;padding:1px 8px;font-size:12px;font-weight:400}
 .empty{color:var(--dim);font-style:italic}
 #key-bar[hidden]{display:none}
+#uiver{color:var(--dim);font-size:11px;border:1px solid var(--line);border-radius:8px;padding:2px 8px}
 #key-bar{position:fixed;bottom:0;left:0;right:0;display:flex;gap:10px;padding:14px 22px;background:var(--panel);border-top:1px solid var(--line)}
 #key-bar input{flex:1}
