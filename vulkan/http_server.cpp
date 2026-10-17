@@ -1811,6 +1811,46 @@ void handle_music_abc(const NetApi &api, int sock, const char *body)
     std::fclose(file);
     send_json(api, sock, nlohmann::json{{"ok", true}, {"path", path}}.dump().c_str());
 }
+
+// Music Studio: delete a listed file (wav/mp3/abc) from work/audio by name.
+void handle_music_delete(const NetApi &api, int sock, const char *body)
+{
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("name") || !j["name"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name", "Expected {name}.");
+        return;
+    }
+    const std::string name = j["name"].get<std::string>();
+    if (name.size() < 5 || name.size() > 96 || name.find("..") != std::string::npos ||
+        (name.compare(name.size() - 4, 4, ".abc") != 0 &&
+         name.compare(name.size() - 4, 4, ".wav") != 0 &&
+         name.compare(name.size() - 4, 4, ".mp3") != 0))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name",
+                     "Name must be a plain *.wav, *.mp3 or *.abc file.");
+        return;
+    }
+    for (const char c : name)
+    {
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!allowed)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_name", "Name has forbidden characters.");
+            return;
+        }
+    }
+    const std::string path = std::string("/download0/ProsperoAI/work/audio/") + name;
+    if (std::remove(path.c_str()) != 0)
+    {
+        openai_error(api, sock, "404 Not Found", "delete_failed", path.c_str());
+        return;
+    }
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"deleted", name}}.dump().c_str());
+}
 #endif
 
 void handle_connection(const NetApi &api, int sock)
@@ -1896,6 +1936,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_files(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
+    else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)
+        handle_music_delete(api, sock, body);
 #endif
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/") == 0)
         send_status(api, sock, "200 OK", "text/html; charset=utf-8", kChatPage);

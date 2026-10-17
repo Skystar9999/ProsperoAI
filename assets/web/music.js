@@ -8,12 +8,12 @@
 
   function apiKey() { return localStorage.getItem(KEY) || ''; }
 
-  function api(path, body, timeoutMs) {
+  function api(path, body, timeoutMs, method) {
     var opts = { headers: {} };
     var k = apiKey();
     if (k) opts.headers['Authorization'] = 'Bearer ' + k;
     if (body !== undefined) {
-      opts.method = 'POST';
+      opts.method = method || 'POST';
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
     }
@@ -117,6 +117,17 @@
           ext.textContent = 'ABC — se încarcă în editor cu „Încarcă în editor”';
           d.appendChild(ext);
         }
+        var del = document.createElement('button');
+        del.type = 'button'; del.className = 'del'; del.textContent = '🗑';
+        del.title = 'Șterge ' + f.name;
+        del.addEventListener('click', function () {
+          if (!window.confirm('Șterg ' + f.name + '?')) return;
+          api('/api/music/file', { name: f.name }, 15000, 'DELETE')
+            .then(function () { delete knownFiles[f.name]; loadLibrary(); loadAbcSelect(); })
+            .catch(function (e) { setStatus('Ștergere eșuată: ' + e.message, 'err'); });
+        });
+        s.appendChild(document.createTextNode(' '));
+        s.appendChild(del);
         box.appendChild(d);
       });
     }).catch(function (e) { $('tracks').innerHTML = '<div class="empty">' + e.message + '</div>'; });
