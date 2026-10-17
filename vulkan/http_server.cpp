@@ -1026,25 +1026,42 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
                 const auto raw_options = it.value().get<std::string>();
                 // Tolerate stale clients: drop abc_file= pointing at a missing
                 // file instead of failing the whole generation in the engine.
-                std::string options;
-                std::size_t pos = 0;
-                while (pos < raw_options.size())
+                // When nothing is missing the raw string passes through untouched.
+                std::string options = raw_options;
                 {
-                    const std::size_t eol = raw_options.find('\n', pos);
-                    const std::size_t end = (eol == std::string::npos) ? raw_options.size() : eol;
-                    const std::string line = raw_options.substr(pos, end - pos);
-                    pos = (eol == std::string::npos) ? raw_options.size() : eol + 1;
-                    if (line.rfind("abc_file=", 0) == 0 &&
-                        ::access(line.c_str() + 9, F_OK) != 0)
+                    bool any_missing = false;
+                    std::size_t scan = 0;
+                    while (scan < raw_options.size() && !any_missing)
                     {
-                        std::fprintf(stderr, "[music] abc_file missing, ignored: %s\n",
-                                     line.c_str() + 9);
-                        continue;
+                        const std::size_t eol = raw_options.find('\n', scan);
+                        const std::size_t end = (eol == std::string::npos) ? raw_options.size() : eol;
+                        if (raw_options.compare(scan, 9, "abc_file=") == 0 && end > scan + 9)
+                        {
+                            const std::string file(raw_options, scan + 9, end - scan - 9);
+                            if (::access(file.c_str(), F_OK) != 0) any_missing = true;
+                        }
+                        scan = (eol == std::string::npos) ? raw_options.size() : eol + 1;
                     }
-                    if (!line.empty())
+                    if (any_missing)
                     {
-                        if (!options.empty()) options += '\n';
-                        options += line;
+                        options.clear();
+                        std::size_t pos = 0;
+                        while (pos < raw_options.size())
+                        {
+                            const std::size_t eol = raw_options.find('\n', pos);
+                            const std::size_t end = (eol == std::string::npos) ? raw_options.size() : eol;
+                            const std::string line = raw_options.substr(pos, end - pos);
+                            pos = (eol == std::string::npos) ? raw_options.size() : eol + 1;
+                            if (line.rfind("abc_file=", 0) == 0 &&
+                                ::access(line.c_str() + 9, F_OK) != 0)
+                            {
+                                std::fprintf(stderr, "[music] abc_file missing, ignored: %s\n",
+                                             line.c_str() + 9);
+                                continue;
+                            }
+                            options += line;
+                            if (pos < raw_options.size()) options += '\n';
+                        }
                     }
                 }
                 if (prospero_settings::valid_audio_options(options)) { p.audio_options = options; valid = true; }
