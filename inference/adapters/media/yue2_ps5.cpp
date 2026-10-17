@@ -143,10 +143,10 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
         const char *ps5_value;
         const char *ps5pro_value;
     } k_arena_options[] = {
-        {"yue2.ar_prefill_graph_arena_mb", "128", "256"},
-        {"yue2.ar_decode_graph_arena_mb", "64", "128"},
-        {"yue2.nar_graph_arena_mb", "512", "1024"},
-        {"yue2.vae_graph_arena_mb", "64", "1024"},
+        {"yue2.ar_prefill_graph_arena_mb", "128", "128"},
+        {"yue2.ar_decode_graph_arena_mb", "64", "64"},
+        {"yue2.nar_graph_arena_mb", "512", "512"},
+        {"yue2.vae_graph_arena_mb", "64", "512"},
     };
     for (const auto &arena : k_arena_options)
     {
