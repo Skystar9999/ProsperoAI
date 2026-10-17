@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prospero Music Studio</title>
+<link rel="stylesheet" href="/music.css">
+</head>
+<body>
+<header>
+  <div id="brand">🎵 Prospero <span>Music Studio</span></div>
+  <select id="model" title="Model muzical"></select>
+  <span id="status-dot" class="dot"></span>
+</header>
+<main>
+  <section id="composer">
+    <label for="lyrics">Versuri</label>
+    <textarea id="lyrics" rows="10" placeholder="[verse]
+Scrie versurile aici..."></textarea>
+    <label for="style">Stil (prompt)</label>
+    <input id="style" type="text" placeholder="romanian pop, female vocal, deep bass...">
+    <div id="row-abc">
+      <div id="abc-col">
+        <label for="abc">Partitură ABC (opțional)</label>
+        <textarea id="abc" rows="8" placeholder="X:1&#10;M:2/4&#10;L:1/16&#10;K:C..."></textarea>
+        <div id="abc-actions">
+          <input id="abc-name" type="text" value="studio.abc">
+          <button id="abc-save" type="button">Salvează ABC</button>
+          <button id="abc-load" type="button">Încarcă în editor</button>
+          <select id="abc-files" title="Fișiere .abc existente"></select>
+        </div>
+      </div>
+      <div id="opts-col">
+        <label for="cot">Ghidaj melodie</label>
+        <select id="cot">
+          <option value="melody">cot=melody (ABC ca ghidaj)</option>
+          <option value="">fără cot (doar versuri/stil)</option>
+        </select>
+        <label for="abc-max">abc_max_tokens</label>
+        <input id="abc-max" type="number" value="2000" min="100" max="4000" step="100">
+        <label for="duration">Durată (secunde)</label>
+        <div id="dur-row"><input id="duration" type="range" min="30" max="300" step="5" value="240"><span id="dur-val">240</span></div>
+        <label for="seed">Seed</label>
+        <div id="seed-row"><input id="seed" type="number" value="42" min="1" max="4294967295"><button id="dice" type="button" title="seed aleator">🎲</button></div>
+      </div>
+    </div>
+    <button id="generate" type="button">▶ GENEREAZĂ</button>
+    <div id="gen-status"></div>
+    <div id="result"></div>
+  </section>
+  <section id="library">
+    <h2>Librărie <button id="refresh" type="button" title="reîmprospătează">⟳</button></h2>
+    <div id="tracks"></div>
+  </section>
+</main>
+<div id="key-bar" hidden>
+  <input id="key-input" type="password" placeholder="API key (Authorization bearer)">
+  <button id="key-save" type="button">Salvează</button>
+</div>
+<script src="/music.js"></script>
+</body>
+</html>

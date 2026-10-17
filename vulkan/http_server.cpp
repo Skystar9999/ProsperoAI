@@ -44,6 +44,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -408,6 +409,9 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
         {"/app.js", "app.js", "text/javascript; charset=utf-8"},
         {"/voice-catalog.js", "voice-catalog.js", "text/javascript; charset=utf-8"},
         {"/voice-recording.js", "voice-recording.js", "text/javascript; charset=utf-8"},
+        {"/music", "music.html", "text/html; charset=utf-8"},
+        {"/music.css", "music.css", "text/css; charset=utf-8"},
+        {"/music.js", "music.js", "text/javascript; charset=utf-8"},
         {"/fonts/Inter-Regular.ttf", "fonts/Inter-Regular.ttf", "font/ttf"},
         {"/fonts/Inter-SemiBold.ttf", "fonts/Inter-SemiBold.ttf", "font/ttf"},
         {"/fonts/Montserrat-Medium.ttf", "fonts/Montserrat-Medium.ttf", "font/ttf"},
@@ -1721,6 +1725,94 @@ bool handle_conversations(const NetApi &api, int sock, const char *method, const
     return true;
 }
 
+#if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
+// Music Studio: list generated audio + ABC files under work/audio, newest first.
+void handle_music_files(const NetApi &api, int sock)
+{
+    const char *dir = "/download0/ProsperoAI/work/audio";
+    nlohmann::json files = nlohmann::json::array();
+    if (DIR *dir_handle = opendir(dir))
+    {
+        std::vector<std::pair<long long, nlohmann::json>> rows;
+        while (struct dirent *entry = readdir(dir_handle))
+        {
+            const char *name = entry->d_name;
+            const std::size_t name_length = std::strlen(name);
+            if (name_length <= 4 || name_length > 96 ||
+                std::strcmp(name + name_length - 4, ".wav") != 0 &&
+                std::strcmp(name + name_length - 4, ".mp3") != 0 &&
+                std::strcmp(name + name_length - 4, ".abc") != 0)
+                continue;
+            const std::string full = std::string(dir) + "/" + name;
+            struct stat st{};
+            if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+                continue;
+            rows.push_back({static_cast<long long>(st.st_mtime),
+                            nlohmann::json{{"name", name},
+                                           {"size", static_cast<long long>(st.st_size)},
+                                           {"mtime", static_cast<long long>(st.st_mtime)}}});
+        }
+        closedir(dir_handle);
+        std::sort(rows.begin(), rows.end(),
+                  [](const std::pair<long long, nlohmann::json> &a,
+                     const std::pair<long long, nlohmann::json> &b) { return a.first > b.first; });
+        for (auto &row : rows)
+        {
+            files.push_back(std::move(row.second));
+            if (files.size() >= 50)
+                break;
+        }
+    }
+    send_json(api, sock, nlohmann::json{{"files", std::move(files)}}.dump().c_str());
+}
+
+// Music Studio: persist an ABC score typed in the web editor.
+void handle_music_abc(const NetApi &api, int sock, const char *body)
+{
+    const auto reject = [&api, sock](const char *reason) {
+        openai_error(api, sock, "400 Bad Request", "invalid_abc", reason);
+    };
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("name") || !j["name"].is_string() ||
+        !j.contains("content") || !j["content"].is_string())
+    {
+        reject("Expected {name, content}.");
+        return;
+    }
+    const std::string name = j["name"].get<std::string>();
+    const std::string content = j["content"].get<std::string>();
+    if (name.size() < 5 || name.size() > 96 || content.size() > 256 * 1024 ||
+        name.find("..") != std::string::npos ||
+        name.compare(name.size() - 4, 4, ".abc") != 0)
+    {
+        reject("Name must be a plain *.abc file within bounds.");
+        return;
+    }
+    for (const char c : name)
+    {
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!allowed)
+        {
+            reject("Name has forbidden characters.");
+            return;
+        }
+    }
+    const std::string path = std::string("/download0/ProsperoAI/work/audio/") + name;
+    FILE *file = std::fopen(path.c_str(), "wb");
+    if (!file)
+    {
+        openai_error(api, sock, "500 Internal Server Error", "abc_write_failed", path.c_str());
+        return;
+    }
+    std::fwrite(content.data(), 1, content.size(), file);
+    std::fclose(file);
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"path", path}}.dump().c_str());
+}
+#endif
+
 void handle_connection(const NetApi &api, int sock)
 {
     auto storage = std::make_unique<char[]>(kRequestCapacity);
@@ -1800,6 +1892,10 @@ void handle_connection(const NetApi &api, int sock)
         handle_model_download_action(api, sock, body, true);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/models/download") == 0)
         handle_model_download_action(api, sock, body, false);
+    else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/music/files") == 0)
+        handle_music_files(api, sock);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
+        handle_music_abc(api, sock, body);
 #endif
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/") == 0)
         send_status(api, sock, "200 OK", "text/html; charset=utf-8", kChatPage);
