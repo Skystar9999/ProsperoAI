@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 extern "C"
@@ -131,20 +132,26 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
     }
     // audio.cpp pruned the YuE2 graph arena defaults to 32 MiB (2026-10-02),
     // which only fits short generations; longer songs fail deterministically
-    // in the NAR/VAE stages. Size the arenas for songs up to ~5 minutes.
+    // in the NAR/VAE stages ("Oobleck audio VAE decode backend buffer
+    // allocation failed"). PS5 Pro exposes a much larger device heap than the
+    // base model, so size the arenas per console profile.
+    const char *profile = getenv("PROSPERO_VULKAN_PROFILE");
+    const bool ps5_pro = profile && std::string(profile) == "ps5pro";
     static const struct
     {
         const char *key;
-        const char *value;
+        const char *ps5_value;
+        const char *ps5pro_value;
     } k_arena_options[] = {
-        {"yue2.ar_prefill_graph_arena_mb", "128"},
-        {"yue2.ar_decode_graph_arena_mb", "64"},
-        {"yue2.nar_graph_arena_mb", "512"},
-        {"yue2.vae_graph_arena_mb", "64"},
+        {"yue2.ar_prefill_graph_arena_mb", "128", "256"},
+        {"yue2.ar_decode_graph_arena_mb", "64", "128"},
+        {"yue2.nar_graph_arena_mb", "512", "1024"},
+        {"yue2.vae_graph_arena_mb", "64", "1024"},
     };
     for (const auto &arena : k_arena_options)
     {
-        if (audiocpp_options_set(g_options, arena.key, arena.value) != AUDIOCPP_OK)
+        const char *value = ps5_pro ? arena.ps5pro_value : arena.ps5_value;
+        if (audiocpp_options_set(g_options, arena.key, value) != AUDIOCPP_OK)
             log_error((std::string("arena option rejected: ") + arena.key).c_str());
     }
     if (progress)
