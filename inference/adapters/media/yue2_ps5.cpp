@@ -175,7 +175,7 @@ bool forward_option_overrides(audiocpp_request *request, const std::string &blob
             continue;
         }
         if (option_path_key(key) && (value.find("..") != std::string::npos ||
-                                     value.compare(0, 24, "/download0/ProsperoAI/work/") != 0))
+                                     value.rfind("/download0/ProsperoAI/work/", 0) != 0))
         {
             std::snprintf(response, response_capacity,
                           "YuE2: %s must stay under /download0/ProsperoAI/work/", key.c_str());
