@@ -187,7 +187,9 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
     {
         if (!ensure_engine(model_root, progress))
         {
-            result_code = 2;
+            std::snprintf(response, response_capacity, "Could not load YuE2 engine: %s",
+                          audiocpp_last_error());
+            result_code = 0;
             break;
         }
         request = audiocpp_request_create();
@@ -213,7 +215,9 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
             log_error("Vulkan generation failed");
-            result_code = 4;
+            std::snprintf(response, response_capacity, "YuE2 generation failed: %s",
+                          audiocpp_last_error());
+            result_code = 0;
             break;
         }
         const float *samples = nullptr;
