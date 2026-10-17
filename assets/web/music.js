@@ -79,13 +79,13 @@
     }).catch(function () {});
   }
 
-  function buildOptions() {
+  function buildOptions(abcName) {
     var lines = [];
+    if (!abcName) return '';
     var cot = $('cot').value;
     if (cot) lines.push('cot=' + cot);
-    var abcName = $('abc-name').value.trim();
-    if (abcName) lines.push('abc_file=' + AUDIO_DIR + abcName);
-    if (abcName && $('abc-max').value) lines.push('abc_max_tokens=' + $('abc-max').value);
+    lines.push('abc_file=' + AUDIO_DIR + abcName);
+    if ($('abc-max').value) lines.push('abc_max_tokens=' + $('abc-max').value);
     return lines.join('\n');
   }
 
@@ -95,6 +95,7 @@
 
   function loadLibrary() {
     return api('/api/music/files').then(function (j) {
+      trackFiles(j);
       var box = $('tracks');
       box.innerHTML = '';
       var files = j.files || [];
@@ -153,6 +154,9 @@
   });
 
   // ---- generate ----
+  var knownFiles = {};
+  function trackFiles(j) { (j.files || []).forEach(function (f) { knownFiles[f.name] = true; }); }
+
   $('generate').addEventListener('click', function () {
     var btn = $('generate');
     btn.disabled = true;
@@ -161,18 +165,36 @@
       setStatus('Rulează... ' + Math.round((Date.now() - t0) / 1000) +
         's (modelul încarcă/generează, poate dura 4-6 min)', 'busy');
     }, 1000);
-    setStatus('Trimit setările...', 'busy');
-    var body = {
-      audio_lyrics: $('lyrics').value,
-      audio_duration_sec: parseInt($('duration').value, 10) || 240,
-      audio_seed: parseInt($('seed').value, 10) || 42
+    var abcName = $('abc-name').value.trim();
+    if (abcName && !/\.abc$/i.test(abcName)) abcName += '.abc';
+    var abcContent = $('abc').value.trim();
+    var doGenerate = function (effectiveName) {
+      setStatus('Trimit setările...', 'busy');
+      var body = {
+        audio_lyrics: $('lyrics').value,
+        audio_duration_sec: parseInt($('duration').value, 10) || 240,
+        audio_seed: parseInt($('seed').value, 10) || 42
+      };
+      var opts = buildOptions(effectiveName);
+      if (opts) body.audio_options = opts;
+      return api('/api/settings/runtime', body).then(function () {
+        setStatus('Generez...', 'busy');
+        return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
+      });
     };
-    var opts = buildOptions();
-    if (opts) body.audio_options = opts;
-    api('/api/settings/runtime', body).then(function () {
-      setStatus('Generez...', 'busy');
-      return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
-    }).then(function (j) {
+    // ABC: editor plin => salvăm automat și folosim fișierul; editor gol =>
+    // doar nume care există deja pe PS5; altfel fără abc_file (deloc).
+    var pre = Promise.resolve('');
+    if (abcName && abcContent) {
+      setStatus('Salvez ABC automat...', 'busy');
+      pre = api('/api/music/abc', { name: abcName, content: $('abc').value })
+        .then(function () { knownFiles[abcName] = true; return abcName; });
+    } else if (abcName && knownFiles[abcName]) {
+      pre = Promise.resolve(abcName);
+    } else if (abcName) {
+      setStatus('ABC „' + abcName + '” inexistent pe PS5 și editorul e gol — generez fără partitură', 'busy');
+    }
+    pre.then(doGenerate).then(function (j) {
       clearInterval(timer);
       var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 300));
       var m = resp.match(/\/download0\/\S+?\.(?:wav|mp3)/);
