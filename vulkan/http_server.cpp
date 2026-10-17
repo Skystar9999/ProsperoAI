@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <unistd.h>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -1022,7 +1023,30 @@ void handle_runtime_settings(const NetApi &api, int sock, const char *body = nul
             }
             else if (it.key() == "audio_options" && it.value().is_string())
             {
-                const auto options = it.value().get<std::string>();
+                const auto raw_options = it.value().get<std::string>();
+                // Tolerate stale clients: drop abc_file= pointing at a missing
+                // file instead of failing the whole generation in the engine.
+                std::string options;
+                std::size_t pos = 0;
+                while (pos < raw_options.size())
+                {
+                    const std::size_t eol = raw_options.find('\n', pos);
+                    const std::size_t end = (eol == std::string::npos) ? raw_options.size() : eol;
+                    const std::string line = raw_options.substr(pos, end - pos);
+                    pos = (eol == std::string::npos) ? raw_options.size() : eol + 1;
+                    if (line.rfind("abc_file=", 0) == 0 &&
+                        ::access(line.c_str() + 9, F_OK) != 0)
+                    {
+                        std::fprintf(stderr, "[music] abc_file missing, ignored: %s\n",
+                                     line.c_str() + 9);
+                        continue;
+                    }
+                    if (!line.empty())
+                    {
+                        if (!options.empty()) options += '\n';
+                        options += line;
+                    }
+                }
                 if (prospero_settings::valid_audio_options(options)) { p.audio_options = options; valid = true; }
             }
             else if (it.key() == "sd_seed" && it.value().is_number_unsigned())
