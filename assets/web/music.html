@@ -9,7 +9,7 @@
 <body>
 <header>
   <div id="brand">🎵 Prospero <span>Music Studio</span></div>
-  <span id="uiver" title="versiune UI">UI v20</span>
+  <span id="uiver" title="versiune UI">UI v21</span>
   <select id="model" title="Model muzical"></select>
   <span id="status-dot" class="dot"></span>
 </header>
@@ -49,6 +49,8 @@ Scrie versurile aici..."></textarea>
         <div id="seed-row"><input id="seed" type="number" value="42" min="1" max="4294967295"><button id="dice" type="button" title="seed aleator">🎲</button></div>
       </div>
     </details>
+    <label for="track-name">Nume piesă (opțional — fișierul iese „nume_seed&lt;N&gt;.wav”)</label>
+    <input id="track-name" type="text" placeholder="ex: vara-fara-soare" autocomplete="off">
     <button id="generate" type="button">▶ GENEREAZĂ</button>
     <div id="gen-status"></div>
     <div id="result"></div>

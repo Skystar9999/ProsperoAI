@@ -1892,6 +1892,56 @@ void handle_music_delete(const NetApi &api, int sock, const char *body)
     }
     send_json(api, sock, nlohmann::json{{"ok", true}, {"deleted", name}}.dump().c_str());
 }
+
+// Music Studio: rename a file inside work/audio (e.g. stamp a friendly track name).
+void handle_music_rename(const NetApi &api, int sock, const char *body)
+{
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("src") || !j["src"].is_string() ||
+        !j.contains("dst") || !j["dst"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name", "Expected {src, dst}.");
+        return;
+    }
+    const std::string src = j["src"].get<std::string>();
+    const std::string dst = j["dst"].get<std::string>();
+    const auto bad = [](const std::string &name)
+    {
+        if (name.size() < 5 || name.size() > 96 || name.find("..") != std::string::npos ||
+            (name.compare(name.size() - 4, 4, ".abc") != 0 &&
+             name.compare(name.size() - 4, 4, ".wav") != 0 &&
+             name.compare(name.size() - 4, 4, ".mp3") != 0))
+            return true;
+        for (const char c : name)
+        {
+            const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                 (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+            if (!allowed) return true;
+        }
+        return false;
+    };
+    if (bad(src) || bad(dst))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name",
+                     "Names must be plain *.wav, *.mp3 or *.abc file names.");
+        return;
+    }
+    const std::string from = std::string("/download0/ProsperoAI/work/audio/") + src;
+    const std::string to = std::string("/download0/ProsperoAI/work/audio/") + dst;
+    if (::access(to.c_str(), F_OK) == 0)
+    {
+        openai_error(api, sock, "409 Conflict", "dst_exists", dst.c_str());
+        return;
+    }
+    if (std::rename(from.c_str(), to.c_str()) != 0)
+    {
+        openai_error(api, sock, "404 Not Found", "rename_failed", from.c_str());
+        return;
+    }
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"renamed", dst}}.dump().c_str());
+}
 #endif
 
 void handle_connection(const NetApi &api, int sock)
@@ -1977,6 +2027,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_files(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/rename") == 0)
+        handle_music_rename(api, sock, body);
     else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)
         handle_music_delete(api, sock, body);
 #endif

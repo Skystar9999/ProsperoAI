@@ -234,16 +234,40 @@
       res.innerHTML = '';
       if (m) {
         var url = m[0].replace(/[",).]+$/, '');
-        var a = document.createElement('audio');
-        a.controls = true; a.src = url;
-        res.appendChild(a);
-        var p = document.createElement('div'); p.className = 'path'; p.textContent = url;
-        res.appendChild(p);
-        setStatus('Gata în ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
-        loadLibrary();
+        var finish = function (finalUrl) {
+          var res = $('result');
+          res.innerHTML = '';
+          var a = document.createElement('audio');
+          a.controls = true; a.src = finalUrl;
+          res.appendChild(a);
+          var p = document.createElement('div'); p.className = 'path'; p.textContent = finalUrl;
+          res.appendChild(p);
+          setStatus('Gata în ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
+          loadLibrary();
+        };
+        var nice = $('track-name').value.trim();
+        if (nice) {
+          var src = url.substring(url.lastIndexOf('/') + 1);
+          var ext = src.substring(src.lastIndexOf('.'));
+          var safe = nice.toLowerCase().replace(/[ăâîșțşţ]/g, function (c) {
+            return { 'ă': 'a', 'â': 'a', 'î': 'i', 'ș': 's', 'ş': 's', 'ț': 't', 'ţ': 't' }[c];
+          }).replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+          if (!safe) safe = 'piesa';
+          var dst = safe + '_seed' + ($('seed').value || '42') + ext;
+          api('/api/music/rename', { src: src, dst: dst }).then(function () {
+            finish(url.replace(src, dst));
+          }).catch(function () {
+            finish(url);
+            setStatus('Piesa e gata, dar „' + dst + '” exista deja — am păstrat numele original', 'err');
+          });
+        } else {
+          finish(url);
+        }
       } else {
+        var res2 = $('result');
+        res2.innerHTML = '';
         var p2 = document.createElement('div'); p2.className = 'path'; p2.textContent = resp;
-        res.appendChild(p2);
+        res2.appendChild(p2);
         setStatus('Răspuns fără fișier audio', 'err');
       }
     }).catch(function (e) {
