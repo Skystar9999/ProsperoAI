@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 extern "C"
@@ -94,6 +95,153 @@ void log_error(const char *stage)
     std::snprintf(line, sizeof(line), "[prosperoai:yue2] %s: %.420s\n", stage,
                   audiocpp_last_error());
     sceKernelDebugOutText(0, line);
+}
+
+void log_note(const char *stage)
+{
+    char line[512];
+    std::snprintf(line, sizeof(line), "[prosperoai:yue2] %s\n", stage);
+    sceKernelDebugOutText(0, line);
+}
+
+// Engine options a user may override through the audio_options setting. Keys
+// outside this list never reach the engine; path-valued keys are restricted to
+// the app work tree so a bad setting cannot make the engine read any file.
+bool option_key_allowed(const std::string &key)
+{
+    static constexpr const char *keys[] = {"cot",
+                                           "stop_after",
+                                           "export_semantic",
+                                           "guidance_scale",
+                                           "num_inference_steps",
+                                           "abc",
+                                           "abc_file",
+                                           "semantic_prefix",
+                                           "semantic_prefix_file",
+                                           "nar_noise_file",
+                                           "abc_temperature",
+                                           "abc_top_p",
+                                           "abc_top_k",
+                                           "abc_repetition_penalty",
+                                           "abc_penalty_window",
+                                           "abc_min_tokens",
+                                           "abc_max_tokens",
+                                           "semantic_temperature",
+                                           "semantic_top_p",
+                                           "semantic_top_k",
+                                           "semantic_repetition_penalty",
+                                           "semantic_penalty_window",
+                                           "semantic_min_tokens",
+                                           "semantic_max_tokens"};
+    for (const char *candidate : keys)
+        if (key == candidate)
+            return true;
+    return false;
+}
+
+bool option_path_key(const std::string &key)
+{
+    return key == "abc_file" || key == "semantic_prefix_file" || key == "nar_noise_file";
+}
+
+// Applies "key=value" lines from the setting after the adapter defaults, so an
+// override always wins. Unknown keys are skipped with a note; a malformed line
+// or a key the engine rejects aborts the request so the mistake stays visible.
+bool forward_option_overrides(audiocpp_request *request, const std::string &blob,
+                              std::string &stop_after, char *response,
+                              std::size_t response_capacity)
+{
+    std::size_t pos = 0;
+    while (pos < blob.size())
+    {
+        const std::size_t eol = blob.find('\n', pos);
+        const std::string line =
+            blob.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+        pos = eol == std::string::npos ? blob.size() : eol + 1;
+        if (line.empty())
+            continue;
+        const std::size_t eq = line.find('=');
+        const std::string key = eq == std::string::npos ? "" : line.substr(0, eq);
+        const std::string value = eq == std::string::npos ? "" : line.substr(eq + 1);
+        if (key.empty() || value.empty() || value.size() > 1900)
+        {
+            log_note(("malformed audio_options line: " + line).c_str());
+            std::snprintf(response, response_capacity, "YuE2: malformed audio_options line");
+            return false;
+        }
+        if (!option_key_allowed(key))
+        {
+            log_note(("audio_options: unknown key ignored: " + key).c_str());
+            continue;
+        }
+        if (option_path_key(key) && (value.find("..") != std::string::npos ||
+                                     value.compare(0, 24, "/download0/ProsperoAI/work/") != 0))
+        {
+            std::snprintf(response, response_capacity,
+                          "YuE2: %s must stay under /download0/ProsperoAI/work/", key.c_str());
+            return false;
+        }
+        if (key == "stop_after")
+            stop_after = value;
+        if (audiocpp_request_set_option(request, key.c_str(), value.c_str()) != AUDIOCPP_OK)
+        {
+            log_error("audio_options rejected");
+            std::snprintf(response, response_capacity, "YuE2 rejected audio option '%s': %s",
+                          key.c_str(), audiocpp_last_error());
+            return false;
+        }
+    }
+    return true;
+}
+
+// Saves every artifact the run produced (score.abc, semantic.json, ...) next to
+// the WAV, where the media allowlist in http_server serves them for download.
+// Returns a comma-separated list of the written paths for the response text.
+std::string write_result_artifacts(const audiocpp_result *result, const char *output_path)
+{
+    std::string base = output_path;
+    const std::size_t dot = base.rfind('.');
+    const std::size_t slash = base.rfind('/');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash))
+        base = base.substr(0, dot);
+    std::string note;
+    for (std::size_t i = 0; i < audiocpp_result_artifact_count(result); ++i)
+    {
+        audiocpp_artifact_kind kind = AUDIOCPP_ARTIFACT_CUSTOM;
+        const char *id = nullptr;
+        const void *payload = nullptr;
+        std::size_t bytes = 0;
+        if (audiocpp_result_artifact(result, i, &kind, &id, &payload, &bytes) != AUDIOCPP_OK ||
+            !payload || !bytes)
+            continue;
+        std::string name = id && *id ? id : "artifact";
+        for (char &c : name)
+            if (!(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+                  c == '-' || c == '_'))
+                c = '_';
+        std::string extension = ".bin";
+        if (name == "score")
+            extension = ".abc";
+        else if (name == "semantic")
+            extension = ".json";
+        else if (kind == AUDIOCPP_ARTIFACT_MIDI)
+            extension = ".mid";
+        const std::string path = base + "-" + name + extension;
+        std::FILE *file = std::fopen(path.c_str(), "wbx");
+        if (!file || std::fwrite(payload, 1, bytes, file) != bytes)
+        {
+            if (file)
+                std::fclose(file);
+            log_note(("artifact write failed: " + path).c_str());
+            continue;
+        }
+        if (std::fclose(file))
+            continue;
+        if (!note.empty())
+            note += ", ";
+        note += path;
+    }
+    return note;
 }
 
 void log_memory(const char *stage)
@@ -212,13 +360,21 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
             // Cap the semantic stream (~12.5 tokens/s audio) so the VAE decode
             // buffer stays inside the ps5pro graph arena; uncapped runs emit
             // multi-minute streams that fail allocation at decode time.
-            audiocpp_request_set_option(request, "semantic_max_tokens", "10000") !=
-                AUDIOCPP_OK ||
+            audiocpp_request_set_option(request, "semantic_max_tokens", "10000") != AUDIOCPP_OK ||
             (!settings.audio_lyrics.empty() &&
              audiocpp_request_set_option(request, "lyrics", settings.audio_lyrics.c_str()) !=
                  AUDIOCPP_OK))
         {
             log_error("request setup failed");
+            result_code = 3;
+            break;
+        }
+        // User overrides go last so they win over the defaults above.
+        std::string stop_after = "audio";
+        if (!forward_option_overrides(request, settings.audio_options, stop_after, response,
+                                      response_capacity))
+        {
+            log_error("audio_options");
             result_code = 3;
             break;
         }
@@ -230,6 +386,18 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
             std::snprintf(response, response_capacity, "YuE2 generation failed: %s",
                           audiocpp_last_error());
             result_code = 0;
+            break;
+        }
+        // stop_after=abc|semantic runs no audio stage; the run's value is in its
+        // artifacts (score.abc, semantic.json) saved next to the unused WAV name.
+        if (stop_after != "audio")
+        {
+            const std::string artifacts = write_result_artifacts(result, output);
+            std::snprintf(response, response_capacity,
+                          artifacts.empty()
+                              ? "YuE2 stopped after the '%s' stage; no artifacts returned"
+                              : "YuE2 stopped after the '%s' stage. Artifacts: %s",
+                          stop_after.c_str(), artifacts.c_str());
             break;
         }
         const float *samples = nullptr;
@@ -245,6 +413,13 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
             break;
         }
         std::snprintf(response, response_capacity, "Music generated locally at %s", output);
+        const std::string artifacts = write_result_artifacts(result, output);
+        const std::size_t used = std::strlen(response);
+        if (!artifacts.empty() && used + artifacts.size() + 13 < response_capacity)
+        {
+            std::snprintf(response + used, response_capacity - used, " Artifacts: %s",
+                          artifacts.c_str());
+        }
     } while (false);
     audiocpp_result_free(result);
     audiocpp_request_free(request);

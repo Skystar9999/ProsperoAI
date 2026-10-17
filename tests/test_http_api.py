@@ -69,6 +69,23 @@ class HttpApiTests(unittest.TestCase):
         for invalid in ({'audio_lyrics': 5}, {'audio_lyrics': 'x' * 4097}):
             self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
 
+    def test_audio_options_round_trip_and_persistence(self):
+        config = Path(self.scratch.name) / 'runtime.cfg'
+        config.write_text('version=2\ntokens=192\n')
+        options = 'cot=full\nsemantic_temperature=1.1\nsemantic_prefix_file=/download0/ProsperoAI/work/audio/song-semantic.json\n'
+        header, body = self.request('/api/settings/runtime', body={'audio_options': options})
+        self.assertIn('200 OK', header)
+        self.assertEqual(json.loads(body)['audio_options'], options)
+        lines = config.read_text().splitlines()
+        self.assertTrue(any(line.startswith('audio_options_b64=') for line in lines))
+        self.assertEqual(json.loads(self.request('/api/settings/runtime')[1])['audio_options'], options)
+        header, body = self.request('/api/settings/runtime', body={'audio_options': ''})
+        self.assertIn('200 OK', header)
+        self.assertEqual(json.loads(body)['audio_options'], '')
+        self.assertFalse(any(line.startswith('audio_options_b64=') for line in config.read_text().splitlines()))
+        for invalid in ({'audio_options': 5}, {'audio_options': 'x' * 4097}, {'audio_options': 'cot=full\n\x07bell'}):
+            self.assertIn('400 Bad Request', self.request('/api/settings/runtime', body=invalid)[0])
+
     def test_runtime_settings_round_trip(self):
         config = Path(self.scratch.name) / 'runtime.cfg'
         config.write_text('version=2\nstyle=2\ntokens=192\ntheme=1\n')
