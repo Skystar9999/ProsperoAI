@@ -188,8 +188,9 @@
   var knownFiles = {};
   function trackFiles(j) { (j.files || []).forEach(function (f) { knownFiles[f.name] = true; }); }
 
-  $('generate').addEventListener('click', function () {
+  function runGeneration() {
     var btn = $('generate');
+    if (btn.disabled) return;
     btn.disabled = true;
     var t0 = Date.now();
     var timer = setInterval(function () {
@@ -274,6 +275,12 @@
       clearInterval(timer);
       setStatus('Eșec: ' + e.message, 'err');
     }).then(function () { btn.disabled = false; });
+  }
+  $('generate').addEventListener('click', runGeneration);
+  $('regen').addEventListener('click', function () {
+    var s = $('seed');
+    s.value = String(Math.min(4294967295, (parseInt(s.value, 10) || 42) + 1));
+    runGeneration();
   });
 
   // ---- misc ----
