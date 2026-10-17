@@ -1542,6 +1542,17 @@ void handle_model_memory_estimate(const NetApi &api, int sock, const char *body)
                     "{\"error\":\"Invalid model ID.\"}");
         return;
     }
+    if (!request.contains("context_tokens") || !request["context_tokens"].is_number_unsigned() ||
+        !request.contains("output_limit") || !request["output_limit"].is_number_unsigned() ||
+        !request.contains("thinking") || !request["thinking"].is_boolean())
+    {
+        send_status(api, sock, "400 Bad Request", "application/json",
+                    "{\"error\":\"Provide context_tokens, output_limit, and thinking settings.\"}");
+        return;
+    }
+    const unsigned context_tokens = request["context_tokens"].get<unsigned>();
+    const unsigned output_limit = request["output_limit"].get<unsigned>();
+    const bool thinking = request["thinking"].get<bool>();
 
     nlohmann::json gguf_size = nullptr;
     if (model_id.size() > 5 && model_id.compare(model_id.size() - 5, 5, ".gguf") == 0 &&
@@ -1558,9 +1569,11 @@ void handle_model_memory_estimate(const NetApi &api, int sock, const char *body)
             gguf_size = static_cast<std::uint64_t>(model_info.st_size);
     }
 
-    unsigned samples = 0;
-    std::uint64_t largest_heap = 0;
-    std::uint64_t least_flexible_free = ~std::uint64_t{0};
+    const auto summary = prospero::debug::model_memory_summary(
+        model_id.c_str(), context_tokens, output_limit, thinking);
+    const unsigned samples = summary.samples;
+    const std::uint64_t largest_heap = summary.largest_vulkan_heap_bytes;
+    const std::uint64_t least_flexible_free = summary.least_flexible_free_bytes;
     nlohmann::json latest_settings = nullptr;
     const char *files[] = {"/download0/ProsperoAI/logs/events.prev.jsonl",
                            "/download0/ProsperoAI/logs/events.jsonl"};
@@ -1575,16 +1588,14 @@ void handle_model_memory_estimate(const NetApi &api, int sock, const char *body)
                 if (!event.is_object() || event.value("operation", std::string()) !=
                                               "model-memory-sample" ||
                     event.value("model", std::string()) != model_id ||
+                    event.value("context_tokens", 0U) != context_tokens ||
+                    event.value("output_limit", 0U) != output_limit ||
+                    event.value("thinking", false) != thinking ||
                     !event.contains("vulkan_heap_bytes") ||
                     !event["vulkan_heap_bytes"].is_number_integer() ||
                     !event.contains("flexible_free_bytes") ||
                     !event["flexible_free_bytes"].is_number_integer())
                     continue;
-                ++samples;
-                largest_heap = std::max(largest_heap,
-                    event["vulkan_heap_bytes"].get<std::uint64_t>());
-                least_flexible_free = std::min(least_flexible_free,
-                    event["flexible_free_bytes"].get<std::uint64_t>());
                 latest_settings = nlohmann::json{{"context_tokens", event.value("context_tokens", 0U)},
                     {"output_limit", event.value("output_limit", 0U)},
                     {"thinking", event.value("thinking", false)}};

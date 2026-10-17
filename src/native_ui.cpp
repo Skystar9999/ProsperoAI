@@ -57,10 +57,12 @@ enum DialogAction
 
 std::string model_memory_note(const std::string &model_id)
 {
-    const auto summary = debug::model_memory_summary(model_id.c_str());
+    const auto settings = prospero_settings::get();
+    const auto summary = debug::model_memory_summary(model_id.c_str(), settings.context,
+                                                     settings.output_limit, settings.thinking);
     if (!summary.samples)
-        return "No successful memory measurement exists for this model yet. A safe fit estimate "
-               "is unavailable.";
+        return "No successful memory measurement exists for this model with the current context, "
+               "output limit, and thinking setting. A reliable fit estimate is unavailable.";
     char note[320];
     constexpr double gib = 1024.0 * 1024.0 * 1024.0;
     std::snprintf(note, sizeof(note),

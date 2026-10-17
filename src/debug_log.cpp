@@ -277,7 +277,8 @@ void model_memory_sample(const char *model_id, unsigned context_tokens, unsigned
     }
 }
 
-MemorySummary model_memory_summary(const char *model_id)
+MemorySummary model_memory_summary(const char *model_id, unsigned context_tokens,
+                                   unsigned output_limit, bool thinking)
 {
     MemorySummary summary{};
     if (!model_id || !*model_id)
@@ -298,6 +299,9 @@ MemorySummary model_memory_summary(const char *model_id)
                 if (!event.is_object() ||
                     event.value("operation", std::string()) != "model-memory-sample" ||
                     event.value("model", std::string()) != model_id ||
+                    event.value("context_tokens", 0U) != context_tokens ||
+                    event.value("output_limit", 0U) != output_limit ||
+                    event.value("thinking", false) != thinking ||
                     !event.contains("vulkan_heap_bytes") ||
                     !event["vulkan_heap_bytes"].is_number_integer() ||
                     !event.contains("flexible_free_bytes") ||

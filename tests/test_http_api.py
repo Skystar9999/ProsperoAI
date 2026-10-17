@@ -251,6 +251,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("404 Not Found", self.request("/api/models/selection", body={"id": "missing.gguf"})[0])
         self.assertIn("400 Bad Request", self.request("/api/models/selection", body={"id": 3})[0])
         self.assertIn("401 Unauthorized", self.request("/api/models/selection", key="secret")[0])
+
         header, body = self.request("/api/models", body={"id": "tiny.gguf"}, method="DELETE")
         self.assertIn("409 Conflict", header)
         self.assertIn("active", json.loads(body)["error"])
@@ -264,6 +265,18 @@ class HttpApiTests(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(data["model"], "second.gguf")
         self.assertEqual(data["usage"]["total_tokens"], 14)
+
+    def test_model_memory_estimate_requires_settings(self):
+        head, body = self.request("/api/models/estimate", body={"id": "second.gguf"})
+        self.assertIn("400 Bad Request", head)
+        self.assertIn("context_tokens", body)
+        head, body = self.request(
+            "/api/models/estimate",
+            body={"id": "second.gguf", "context_tokens": 4096, "output_limit": 512,
+                  "thinking": False},
+        )
+        self.assertIn("200 OK", head)
+        self.assertFalse(json.loads(body)["estimate_available"])
 
     def test_model_selection_reports_prepare_failure_and_runtime_busy(self):
         header, body = self.request(

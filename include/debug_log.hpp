@@ -35,15 +35,16 @@ void event(const char *operation, const char *model_id, const char *error_code,
            OperationId operation_id = 0);
 // Runtime snapshots contain measurements and settings only, never user content.
 void model_memory_sample(const char *model_id, unsigned context_tokens, unsigned output_limit,
-                         bool thinking,
-                         std::uint64_t vulkan_heap_bytes, std::uint64_t flexible_free_bytes);
+                         bool thinking, std::uint64_t vulkan_heap_bytes,
+                         std::uint64_t flexible_free_bytes);
 struct MemorySummary
 {
     unsigned samples = 0;
     std::uint64_t largest_vulkan_heap_bytes = 0;
     std::uint64_t least_flexible_free_bytes = 0;
 };
-MemorySummary model_memory_summary(const char *model_id);
+MemorySummary model_memory_summary(const char *model_id, unsigned context_tokens,
+                                   unsigned output_limit, bool thinking);
 // The logs folder, as the app names it.
 const char *folder();
 } // namespace prospero::debug
