@@ -18,6 +18,7 @@ namespace
 std::thread::id ui_thread;
 unsigned selected = 0;
 bool fail_generation = false, fail_save = false, fail_after_generation = false;
+bool fail_prepare = false;
 unsigned generations = 0;
 struct Saved
 {
@@ -98,7 +99,7 @@ bool gpt_runtime_select_model(unsigned index)
 int gpt_runtime_prepare()
 {
     off_ui();
-    return 0;
+    return fail_prepare ? -1 : 0;
 }
 bool gpt_runtime_context_full()
 {
@@ -239,6 +240,21 @@ int main(int argc, char **argv)
         assert(app.state().messages.back().content.find("世界") != std::string::npos);
         assert(app.state().stats_valid && app.state().stats.generated_tokens == 10);
         assert(told(app, prospero::Notice::ReplyReady));
+        // A replacement model may fail to prepare; keep the saved conversation
+        // visible and allow its original model to be prepared again.
+        fail_prepare = true;
+        assert(app.select_model(12));
+        settle(app);
+        assert(!app.state().ready && !app.state().preparing);
+        assert(app.state().selected_model == 12 && app.state().messages.size() == 2);
+        assert(std::strcmp(app.state().session.model_id, "model-499") == 0);
+        assert(app.state().status.find("could not be prepared") != std::string::npos);
+        assert(!app.can_send());
+        fail_prepare = false;
+        assert(app.open_session(0));
+        settle(app);
+        assert(app.state().ready && app.state().selected_model == 499);
+        assert(app.state().messages.size() == 2 && app.can_send());
         assert(app.select_model(12));
         settle(app);
         assert(app.state().messages.empty());

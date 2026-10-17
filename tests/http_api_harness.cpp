@@ -5,6 +5,7 @@
 #include "../vulkan/http_server.cpp"
 #include <iostream>
 #include <iterator>
+#include <cstdlib>
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -71,6 +72,7 @@ extern "C"
 static std::string input, wire;
 static std::size_t position;
 static unsigned current_model;
+static bool fail_model_prepare = std::getenv("PROSPERO_TEST_FAIL_PREPARE") != nullptr;
 namespace prospero_model_download
 {
 // A test that needs a download in progress says so in the environment: every request
@@ -202,7 +204,7 @@ bool gpt_runtime_select_model(unsigned i)
 }
 int gpt_runtime_prepare()
 {
-    return 0;
+    return fail_model_prepare ? -1 : 0;
 }
 bool gpt_runtime_delete_model(const char *id)
 {
@@ -266,11 +268,16 @@ int main(int argc, char **argv)
 {
     if (argc > 1)
         api_key = argv[1];
+    const bool runtime_busy = std::getenv("PROSPERO_TEST_RUNTIME_BUSY") != nullptr;
+    if (runtime_busy)
+        prospero::model_manager::runtime_mutex().lock();
     input.assign(std::istreambuf_iterator<char>(std::cin), {});
     NetApi api{};
     api.send = fake_send;
     api.recv = fake_recv;
     api.socket_close = fake_close;
     handle_connection(api, 1);
+    if (runtime_busy)
+        prospero::model_manager::runtime_mutex().unlock();
     std::cout << wire;
 }

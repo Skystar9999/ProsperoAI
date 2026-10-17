@@ -265,6 +265,23 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(data["model"], "second.gguf")
         self.assertEqual(data["usage"]["total_tokens"], 14)
 
+    def test_model_selection_reports_prepare_failure_and_runtime_busy(self):
+        header, body = self.request(
+            "/api/models/selection",
+            body={"id": "second.gguf"},
+            environment={"PROSPERO_TEST_FAIL_PREPARE": "1"},
+        )
+        self.assertIn("500 Internal Server Error", header)
+        self.assertIn("could not be prepared", json.loads(body)["error"])
+
+        header, body = self.request(
+            "/api/models/selection",
+            body={"id": "second.gguf"},
+            environment={"PROSPERO_TEST_RUNTIME_BUSY": "1"},
+        )
+        self.assertIn("409 Conflict", header)
+        self.assertIn("runtime is busy", json.loads(body)["error"])
+
     def test_ollama_uses_requested_model(self):
         for route, body in [
             ("/api/generate", {"model": "second.gguf", "prompt": "selected-model"}),
