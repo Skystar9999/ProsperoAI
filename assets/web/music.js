@@ -184,10 +184,11 @@
       var body = {
         audio_lyrics: $('lyrics').value,
         audio_duration_sec: parseInt($('duration').value, 10) || 240,
-        audio_seed: parseInt($('seed').value, 10) || 42
+        audio_seed: parseInt($('seed').value, 10) || 42,
+        // mereu prezent: gol = ȘTERGE opțiunile moștenite (altfel abc_file din
+        // o sesiune anterioară rămâne în setările runtime și engine-ul îl vede)
+        audio_options: buildOptions(effectiveName)
       };
-      var opts = buildOptions(effectiveName);
-      if (opts) body.audio_options = opts;
       return api('/api/settings/runtime', body).then(function () {
         setStatus('Generez...', 'busy');
         return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
