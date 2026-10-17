@@ -257,6 +257,87 @@ void log_memory(const char *stage)
     sceKernelDebugOutText(0, line);
 }
 
+// PS5 VRAM budget: the pinned upstream sidecar ships desktop-sized VAE decode
+// tiles (1024 latent frames) whose graph fails to allocate next to the
+// resident model ("Oobleck audio VAE decode backend buffer allocation
+// failed"). Clamp the tile keys to the values proven on PS5 on every model
+// load, so installer re-downloads of the hash-pinned sidecar cannot resurrect
+// the failure. Keys absent (older configs) get the proven pair appended.
+void clamp_vae_tiles(const std::string &root)
+{
+    const std::string path = root + "/sidecars/yue2-vae-config.json";
+    std::string text;
+    if (std::FILE *f = std::fopen(path.c_str(), "rb"))
+    {
+        char buf[512];
+        std::size_t n;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+            text.append(buf, n);
+        std::fclose(f);
+    }
+    else
+    {
+        return;
+    }
+    auto tile_value = [&text](const char *key, long long fallback) -> long long
+    {
+        const std::size_t k = text.find(key);
+        if (k == std::string::npos)
+            return fallback;
+        std::size_t p = k + std::strlen(key);
+        while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == '\n' ||
+                                   text[p] == '\r'))
+            ++p;
+        long long value = 0;
+        while (p < text.size() && text[p] >= '0' && text[p] <= '9')
+            value = value * 10 + (text[p++] - '0');
+        return value;
+    };
+    auto rewrite = [&text](const char *key, long long value)
+    {
+        const std::size_t k = text.find(key);
+        if (k == std::string::npos)
+            return;
+        std::size_t p = k + std::strlen(key);
+        while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == '\n' ||
+                                   text[p] == '\r'))
+            ++p;
+        std::size_t q = p;
+        while (q < text.size() && text[q] >= '0' && text[q] <= '9')
+            ++q;
+        text.replace(p, q - p, std::to_string(value));
+    };
+    const long long core = tile_value("\"decode_core_frames\":", -1);
+    const long long halo = tile_value("\"decode_halo_frames\":", -1);
+    bool changed = false;
+    if (core == -1 || halo == -1)
+    {
+        // Keys absent (older configs fall back to the engine's 1024/16
+        // desktop default): append the proven PS5 pair before the final '}'.
+        const std::size_t end = text.rfind('}');
+        if (end != std::string::npos)
+        {
+            text.insert(end, ",\"decode_core_frames\":512,\"decode_halo_frames\":32");
+            changed = true;
+        }
+    }
+    else if (core > 512)
+    {
+        rewrite("\"decode_core_frames\":", 512);
+        rewrite("\"decode_halo_frames\":", 32);
+        changed = true;
+    }
+    if (changed)
+    {
+        if (std::FILE *w = std::fopen(path.c_str(), "wb"))
+        {
+            std::fwrite(text.data(), 1, text.size(), w);
+            std::fclose(w);
+            log_error("clamped VAE decode tiles to 512/32 for PS5 VRAM budget");
+        }
+    }
+}
+
 bool ensure_engine(const std::string &root, void (*progress)(const char *))
 {
     if (g_model && g_session && g_model_root == root)

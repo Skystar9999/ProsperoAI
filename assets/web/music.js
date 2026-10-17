@@ -21,7 +21,7 @@
     if (ctl && timeoutMs) setTimeout(function () { ctl.abort(); }, timeoutMs);
     if (ctl) opts.signal = ctl.signal;
     return fetch(path, opts).then(function (r) {
-      if (r.status === 401) { $('key-bar').hidden = false; throw new Error('API key necesar (401)'); }
+      if (r.status === 401) { $('key-bar').hidden = false; throw new Error('API key required (401)'); }
       if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 200)); });
       return r.json();
     });
@@ -42,7 +42,7 @@
         if (!MUSIC_RE.test(m.id || '') && !MUSIC_RE.test(m.name || '')) return;
         var o = document.createElement('option');
         o.value = m.id;
-        o.textContent = (m.installed ? '' : '(neinstalat) ') + (m.name || m.id);
+        o.textContent = (m.installed ? '' : '(not installed) ') + (m.name || m.id);
         if (MUSIC_RE.test(m.id) && /yue2/i.test(m.id) && m.installed) o.selected = true;
         sel.appendChild(o);
       });
@@ -52,7 +52,7 @@
         sel.appendChild(o2);
       }
       $('status-dot').className = 'dot on';
-    }).catch(function (e) { $('status-dot').className = 'dot'; setStatus('Nu pot încărca preseturile: ' + e.message, 'err'); });
+    }).catch(function (e) { $('status-dot').className = 'dot'; setStatus('Cannot load presets: ' + e.message, 'err'); });
   }
 
   // ---- runtime settings ----
@@ -91,7 +91,7 @@
 
   // ---- library ----
   function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB'; }
-  function fmtDate(t) { try { return new Date(t * 1000).toLocaleString('ro-RO'); } catch (e) { return ''; } }
+  function fmtDate(t) { try { return new Date(t * 1000).toLocaleString('en-GB'); } catch (e) { return ''; } }
 
   function loadLibrary() {
     return api('/api/music/files').then(function (j) {
@@ -99,7 +99,7 @@
       var box = $('tracks');
       box.innerHTML = '';
       var files = j.files || [];
-      if (!files.length) { box.innerHTML = '<div class="empty">Niciun fișier încă.</div>'; }
+      if (!files.length) { box.innerHTML = '<div class="empty">No files yet.</div>'; }
       files.forEach(function (f) {
         var d = document.createElement('div'); d.className = 'track';
         var m = document.createElement('div'); m.className = 'meta';
@@ -114,17 +114,17 @@
           d.appendChild(a);
         } else {
           var ext = document.createElement('div'); ext.className = 'path';
-          ext.textContent = 'ABC — se încarcă în editor cu „Încarcă în editor”';
+          ext.textContent = 'ABC — use \u201cLoad into editor\u201d to edit it';
           d.appendChild(ext);
         }
         var del = document.createElement('button');
         del.type = 'button'; del.className = 'del'; del.textContent = '🗑';
-        del.title = 'Șterge ' + f.name;
+        del.title = 'Delete ' + f.name;
         del.addEventListener('click', function () {
-          if (!window.confirm('Șterg ' + f.name + '?')) return;
+          if (!window.confirm('Delete ' + f.name + '?')) return;
           api('/api/music/file', { name: f.name }, 15000, 'DELETE')
             .then(function () { delete knownFiles[f.name]; loadLibrary(); loadAbcSelect(); })
-            .catch(function (e) { setStatus('Ștergere eșuată: ' + e.message, 'err'); });
+            .catch(function (e) { setStatus('Delete failed: ' + e.message, 'err'); });
         });
         s.appendChild(document.createTextNode(' '));
         s.appendChild(del);
@@ -148,10 +148,10 @@
   $('abc-save').addEventListener('click', function () {
     var name = $('abc-name').value.trim() || 'studio.abc';
     if (!/\.abc$/i.test(name)) name += '.abc';
-    setStatus('Salvez ABC...', 'busy');
+    setStatus('Saving ABC...', 'busy');
     api('/api/music/abc', { name: name, content: $('abc').value })
-      .then(function () { $('abc-name').value = name; setStatus('ABC salvat: ' + name); loadAbcSelect(); loadLibrary(); })
-      .catch(function (e) { setStatus('Salvare ABC eșuată: ' + e.message, 'err'); });
+      .then(function () { $('abc-name').value = name; setStatus('ABC saved: ' + name); loadAbcSelect(); loadLibrary(); })
+      .catch(function (e) { setStatus('Saving ABC failed: ' + e.message, 'err'); });
   });
 
   $('abc-open').addEventListener('click', function () { $('abc-disk').click(); });
@@ -164,24 +164,24 @@
       var base = f.name.split(/[\\/]/).pop().replace(/[^A-Za-z0-9._-]/g, '_');
       if (!/\.abc$/i.test(base)) base += '.abc';
       $('abc-name').value = base;
-      setStatus('Fișier ' + f.name + ' încărcat în editor — apasă GENERATE (se salvează automat)', 'ok');
+      setStatus('File ' + f.name + ' loaded into editor — press GENERATE (auto-saves)', 'ok');
     };
     reader.readAsText(f);
     ev.target.value = '';
   });
   $('abc-clear').addEventListener('click', function () {
     $('abc').value = '';
-    setStatus('Editor gol — fără partitură la GENERATE', 'ok');
+    setStatus('Editor cleared — no score at GENERATE', 'ok');
   });
 
   $('abc-load').addEventListener('click', function () {
     var name = ($('abc-files').value || $('abc-name').value || '').trim();
-    if (!name) { setStatus('Nume fișier ABC lipsă', 'err'); return; }
+    if (!name) { setStatus('Missing ABC file name', 'err'); return; }
     fetch(AUDIO_DIR + encodeURIComponent(name)).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
-    }).then(function (t) { $('abc').value = t; $('abc-name').value = name; setStatus('Încărcat: ' + name); })
-      .catch(function (e) { setStatus('Încărcare eșuată: ' + e.message, 'err'); });
+    }).then(function (t) { $('abc').value = t; $('abc-name').value = name; setStatus('Loaded: ' + name); })
+      .catch(function (e) { setStatus('Load failed: ' + e.message, 'err'); });
   });
 
   // ---- generate ----
@@ -194,38 +194,38 @@
     btn.disabled = true;
     var t0 = Date.now();
     var timer = setInterval(function () {
-      setStatus('Rulează... ' + Math.round((Date.now() - t0) / 1000) +
-        's (modelul încarcă/generează, poate dura 4-6 min)', 'busy');
+      setStatus('Running... ' + Math.round((Date.now() - t0) / 1000) +
+        's (model load + generation can take 4-6 min)', 'busy');
     }, 1000);
     var abcName = $('abc-name').value.trim();
     if (abcName && !/\.abc$/i.test(abcName)) abcName += '.abc';
     var abcContent = $('abc').value.trim();
     var doGenerate = function (effectiveName) {
-      setStatus('Trimit setările...', 'busy');
+      setStatus('Sending settings...', 'busy');
       var body = {
         audio_lyrics: $('lyrics').value,
         audio_duration_sec: parseInt($('duration').value, 10) || 240,
         audio_seed: parseInt($('seed').value, 10) || 42,
-        // mereu prezent: gol = ȘTERGE opțiunile moștenite (altfel abc_file din
-        // o sesiune anterioară rămâne în setările runtime și engine-ul îl vede)
+        // always sent: empty = CLEAR inherited options (otherwise an abc_file
+        // from an earlier session stays in runtime settings and the engine sees it)
         audio_options: buildOptions(effectiveName)
       };
       return api('/api/settings/runtime', body).then(function () {
-        setStatus('Generez...', 'busy');
+        setStatus('Generating...', 'busy');
         return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
       });
     };
-    // ABC: editor plin => salvăm automat și folosim fișierul; editor gol =>
-    // doar nume care există deja pe PS5; altfel fără abc_file (deloc).
+    // ABC: non-empty editor => auto-save and use the file; empty editor =>
+    // only names that already exist on the PS5; otherwise no abc_file at all.
     var pre = Promise.resolve('');
     if (abcName && abcContent) {
-      setStatus('Salvez ABC automat...', 'busy');
+      setStatus('Auto-saving ABC...', 'busy');
       pre = api('/api/music/abc', { name: abcName, content: $('abc').value })
         .then(function () { knownFiles[abcName] = true; return abcName; });
     } else if (abcName && knownFiles[abcName]) {
       pre = Promise.resolve(abcName);
     } else if (abcName) {
-      setStatus('ABC „' + abcName + '” inexistent pe PS5 și editorul e gol — generez fără partitură', 'busy');
+      setStatus('ABC "' + abcName + '" missing on PS5 and the editor is empty — generating without a score', 'busy');
     }
     pre.then(doGenerate).then(function (j) {
       clearInterval(timer);
@@ -243,7 +243,7 @@
           res.appendChild(a);
           var p = document.createElement('div'); p.className = 'path'; p.textContent = finalUrl;
           res.appendChild(p);
-          setStatus('Gata în ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
+          setStatus('Done in ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
           loadLibrary();
         };
         var nice = $('track-name').value.trim();
@@ -259,7 +259,7 @@
             finish(url.replace(src, dst));
           }).catch(function () {
             finish(url);
-            setStatus('Piesa e gata, dar „' + dst + '” exista deja — am păstrat numele original', 'err');
+            setStatus('Track is ready, but "' + dst + '" already exists — kept the original name', 'err');
           });
         } else {
           finish(url);
@@ -269,11 +269,11 @@
         res2.innerHTML = '';
         var p2 = document.createElement('div'); p2.className = 'path'; p2.textContent = resp;
         res2.appendChild(p2);
-        setStatus('Răspuns fără fișier audio', 'err');
+        setStatus('Response without audio file', 'err');
       }
     }).catch(function (e) {
       clearInterval(timer);
-      setStatus('Eșec: ' + e.message, 'err');
+      setStatus('Failed: ' + e.message, 'err');
     }).then(function () { btn.disabled = false; });
   }
   $('generate').addEventListener('click', runGeneration);
