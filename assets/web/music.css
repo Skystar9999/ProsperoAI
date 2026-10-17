@@ -14,8 +14,10 @@ label{display:block;margin:14px 0 5px;color:var(--dim);font-size:12px;text-trans
 label:first-child{margin-top:0}
 textarea,input[type=text],input[type=number],select{width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}
 textarea{resize:vertical;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
-#row-abc{display:grid;grid-template-columns:1fr 220px;gap:16px;margin-top:6px}
-@media (max-width:700px){#row-abc{grid-template-columns:1fr}}
+#row-abc{display:grid;grid-template-columns:1fr 220px;gap:16px;margin-top:6px;border:0}
+#abc-summary{grid-column:1/-1;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:1.4px;cursor:pointer;padding:4px 0;list-style-position:inside}
+#abc-summary:hover{color:var(--accent2)}
+@media (max-width:700px){#row-abc:not([open]){display:block}#row-abc{grid-template-columns:1fr}}
 #abc-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 #abc-actions input{flex:1 1 110px;min-width:0}
 #abc-actions select{flex:1 1 140px;min-width:0}

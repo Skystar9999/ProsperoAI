@@ -19,7 +19,8 @@
 Scrie versurile aici..."></textarea>
     <label for="style">Stil (prompt)</label>
     <input id="style" type="text" placeholder="romanian pop, female vocal, deep bass...">
-    <div id="row-abc">
+    <details id="row-abc" open>
+      <summary id="abc-summary">Partitură ABC &amp; opțiuni avansate</summary>
       <div id="abc-col">
         <label for="abc">Partitură ABC (opțional)</label>
         <textarea id="abc" rows="8" placeholder="X:1&#10;M:2/4&#10;L:1/16&#10;K:C..."></textarea>
@@ -43,7 +44,7 @@ Scrie versurile aici..."></textarea>
         <label for="seed">Seed</label>
         <div id="seed-row"><input id="seed" type="number" value="42" min="1" max="4294967295"><button id="dice" type="button" title="seed aleator">🎲</button></div>
       </div>
-    </div>
+    </details>
     <button id="generate" type="button">▶ GENEREAZĂ</button>
     <div id="gen-status"></div>
     <div id="result"></div>
