@@ -295,6 +295,17 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
         {"yue2.ar_decode_graph_arena_mb", "64", "64"},
         {"yue2.nar_graph_arena_mb", "512", "512"},
         {"yue2.vae_graph_arena_mb", "64", "512"},
+        // Long songs with a big ABC prefix used to die with "failed to allocate
+        // Yue2 NAR graph": eager NAR attention auto-tiling keeps each score
+        // matrix under 3 GiB (audio.cpp nar_runtime.cpp kAttentionScoreTileBytes),
+        // and a 3 GiB tile does not coexist with weights + KV + prefix-state on
+        // the 12 GiB base heap. Base PS5 pins the eager path with 64-row tiles
+        // (score tile <= ~100 MiB even at the full 24576-token context:
+        // 64 rows x 24576 kv x 16 heads x 4 B; throughput is not the constraint
+        // on this device). The AR prefix-state graph has
+        // no tiling, so long ABC prefixes stay bounded by abc_max_tokens.
+        {"yue2.attention", "eager", "auto"},
+        {"yue2.attention_tile_rows", "64", "256"},
     };
     for (const auto &arena : k_arena_options)
     {
