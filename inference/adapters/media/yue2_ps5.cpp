@@ -137,10 +137,10 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
         const char *key;
         const char *value;
     } k_arena_options[] = {
-        {"yue2.ar_prefill_graph_arena_mb", "256"},
+        {"yue2.ar_prefill_graph_arena_mb", "128"},
         {"yue2.ar_decode_graph_arena_mb", "64"},
-        {"yue2.nar_graph_arena_mb", "1024"},
-        {"yue2.vae_graph_arena_mb", "512"},
+        {"yue2.nar_graph_arena_mb", "512"},
+        {"yue2.vae_graph_arena_mb", "64"},
     };
     for (const auto &arena : k_arena_options)
     {
