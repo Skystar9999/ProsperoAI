@@ -1930,6 +1930,11 @@ void handle_music_rename(const NetApi &api, int sock, const char *body)
     }
     const std::string from = std::string("/download0/ProsperoAI/work/audio/") + src;
     const std::string to = std::string("/download0/ProsperoAI/work/audio/") + dst;
+    if (::access(from.c_str(), F_OK) != 0)
+    {
+        openai_error(api, sock, "404 Not Found", "rename_failed", from.c_str());
+        return;
+    }
     if (::access(to.c_str(), F_OK) == 0)
     {
         openai_error(api, sock, "409 Conflict", "dst_exists", dst.c_str());
