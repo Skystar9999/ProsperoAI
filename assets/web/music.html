@@ -9,7 +9,7 @@
 <body>
 <header>
   <div id="brand">🎵 Prospero <span>Music Studio</span></div>
-  <span id="uiver" title="versiune UI">UI v19</span>
+  <span id="uiver" title="versiune UI">UI v20</span>
   <select id="model" title="Model muzical"></select>
   <span id="status-dot" class="dot"></span>
 </header>
@@ -30,6 +30,9 @@ Scrie versurile aici..."></textarea>
           <button id="abc-save" type="button">Salvează ABC</button>
           <button id="abc-load" type="button">Încarcă în editor</button>
           <select id="abc-files" title="Fișiere .abc existente"></select>
+          <input id="abc-disk" type="file" accept=".abc,text/plain" hidden>
+          <button id="abc-open" type="button">📁 Din fișier</button>
+          <button id="abc-clear" type="button">✖ Golește</button>
         </div>
       </div>
       <div id="opts-col">

@@ -154,6 +154,26 @@
       .catch(function (e) { setStatus('Salvare ABC eșuată: ' + e.message, 'err'); });
   });
 
+  $('abc-open').addEventListener('click', function () { $('abc-disk').click(); });
+  $('abc-disk').addEventListener('change', function (ev) {
+    var f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      $('abc').value = reader.result;
+      var base = f.name.split(/[\\/]/).pop().replace(/[^A-Za-z0-9._-]/g, '_');
+      if (!/\.abc$/i.test(base)) base += '.abc';
+      $('abc-name').value = base;
+      setStatus('Fișier ' + f.name + ' încărcat în editor — apasă GENERATE (se salvează automat)', 'ok');
+    };
+    reader.readAsText(f);
+    ev.target.value = '';
+  });
+  $('abc-clear').addEventListener('click', function () {
+    $('abc').value = '';
+    setStatus('Editor gol — fără partitură la GENERATE', 'ok');
+  });
+
   $('abc-load').addEventListener('click', function () {
     var name = ($('abc-files').value || $('abc-name').value || '').trim();
     if (!name) { setStatus('Nume fișier ABC lipsă', 'err'); return; }
