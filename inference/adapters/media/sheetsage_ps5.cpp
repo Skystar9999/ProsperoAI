@@ -310,15 +310,17 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
     // PS5's libc heap (flexible memory) is a few hundred MiB; audio.cpp's default
     // graph arena (1536 MiB, x8 for the encoder context) only fits on a PC. Shrink
     // it to 32 MiB (256 MiB encoder context) unless the caller overrides it.
-    audiocpp_options_set(g_options, "sheetsage2.decoder_graph_arena_mb", "32");
+    audiocpp_options_set(g_options, "sheetsage2.decoder_graph_arena_mb", "64");
     for (const auto &option : engine_options)
+    {
+        char note[160];
+        std::snprintf(note, sizeof(note), "engine option: %s=%s", option.first.c_str(),
+                      option.second.c_str());
+        stage_log(note);
         if (audiocpp_options_set(g_options, option.first.c_str(), option.second.c_str()) !=
             AUDIOCPP_OK)
-        {
-            char note[160];
-            std::snprintf(note, sizeof(note), "engine option rejected: %s", option.first.c_str());
-            stage_log(note);
-        }
+            stage_log("engine option REJECTED");
+    }
     if (progress)
         progress("Loading SheetSage2 on Vulkan");
     // audio_options backend=cpu isolates ggml-Vulkan faults from audio.cpp logic;
@@ -374,7 +376,7 @@ CoverSettings parse_cover_options(const std::string &blob)
             out.backend = value;
         else if (key == "max_tokens")
             out.max_tokens = value;
-        else if (key.compare(0, 10, "sheetsage2.") == 0)
+        else if (key.compare(0, 11, "sheetsage2.") == 0)
             out.engine_options.emplace_back(key, value); // forwarded verbatim to audio.cpp
     }
     return out;
