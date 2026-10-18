@@ -276,7 +276,7 @@ std::string write_result_artifacts(const audiocpp_result *result, const std::str
 }
 
 bool ensure_engine(const std::string &root, const std::string &weight_type,
-                   void (*progress)(const char *))
+                   const std::string &backend, void (*progress)(const char *))
 {
     if (g_model && g_session && g_model_root == root)
         return true;
@@ -307,7 +307,10 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
         log_error("sheetsage2.weight_type rejected");
     if (progress)
         progress("Loading SheetSage2 on Vulkan");
-    const audiocpp_backend_config backend_config = {"vulkan", 0, 4};
+    // audio_options backend=cpu isolates ggml-Vulkan faults from audio.cpp logic;
+    // anything else (including empty) keeps the GPU path.
+    const char *backend_name = backend == "cpu" ? "cpu" : "vulkan";
+    const audiocpp_backend_config backend_config = {backend_name, 0, 4};
     if (audiocpp_session_create(g_model, "midi", "offline", &backend_config, g_options,
                                 &g_session) != AUDIOCPP_OK)
     {
@@ -327,6 +330,7 @@ struct CoverSettings
 {
     std::string input_audio;
     std::string weight_type;
+    std::string backend;
     std::string max_tokens;
 };
 
@@ -351,6 +355,8 @@ CoverSettings parse_cover_options(const std::string &blob)
             out.input_audio = value;
         else if (key == "weight_type")
             out.weight_type = value;
+        else if (key == "backend")
+            out.backend = value;
         else if (key == "max_tokens")
             out.max_tokens = value;
     }
@@ -375,8 +381,9 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
     const CoverSettings cover = parse_cover_options(settings.audio_options);
     {
         char line[640];
-        std::snprintf(line, sizeof(line), "enter root=%.128s input=%.256s wt=%.16s", root,
-                      cover.input_audio.c_str(), cover.weight_type.c_str());
+        std::snprintf(line, sizeof(line), "enter root=%.128s input=%.256s wt=%.16s be=%.8s", root,
+                      cover.input_audio.c_str(), cover.weight_type.c_str(),
+                      cover.backend.c_str());
         stage_log(line);
     }
     if (cover.input_audio.empty() || cover.input_audio.find("..") != std::string::npos ||
@@ -418,7 +425,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                           sample_rate);
             stage_log(line);
         }
-        if (!ensure_engine(model_root, cover.weight_type, progress))
+        if (!ensure_engine(model_root, cover.weight_type, cover.backend, progress))
         {
             stage_error("engine load failed");
             std::snprintf(response, response_capacity, "Could not load SheetSage2 engine: %s",
@@ -445,6 +452,12 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                       static_cast<double>(samples.size()) / sample_rate);
         if (progress)
             progress(stage);
+        {
+            char line[64];
+            std::snprintf(line, sizeof(line), "request ok, session_run begin (%.1fs audio)",
+                          static_cast<double>(samples.size()) / sample_rate);
+            stage_log(line);
+        }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
             stage_error("session_run");
