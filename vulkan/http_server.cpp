@@ -1571,16 +1571,11 @@ const char *find_header(const char *req, const char *hdr_end, const char *name)
         const char *eol = std::strstr(p, "\r\n");
         if (eol == nullptr || eol > hdr_end)
             break;
-        const char *colon = nullptr;
-        for (const char *q = p; q < eol && q - p != (long)nlen; ++q)
-            if (*q == ':')
-            {
-                colon = q;
-                break;
-            }
-        if (colon != nullptr && colon - p == (long)nlen && header_name_eq(p, name, nlen))
+        // Header must be exactly `name` (case-insensitive) followed by ':'.
+        if (static_cast<std::size_t>(eol - p) > nlen && p[nlen] == ':' &&
+            header_name_eq(p, name, nlen))
         {
-            const char *v = colon + 1;
+            const char *v = p + nlen + 1;
             while (v < eol && (*v == ' ' || *v == '\t'))
                 ++v;
             return v;
