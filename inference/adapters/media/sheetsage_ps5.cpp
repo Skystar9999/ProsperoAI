@@ -330,11 +330,12 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
     }
     if (progress)
         progress("Loading SheetSage2");
-    // CPU is the validated PS5 default (build #37): the Vulkan path also wants
-    // the weights in the RADV heap and the direct pool cannot hold both stores
-    // and vk buffers. audio_options backend=vulkan opts back into the GPU path.
-    const char *backend_name = backend == "vulkan" ? "vulkan" : "cpu";
-    const audiocpp_backend_config backend_config = {backend_name, 0, 4};
+    // Vulkan + q4_0 + 640 MiB stores is the validated PS5 default (probe
+    // 18.10: 62 s vs 376 s CPU, identical 16/16-note transcription). The old
+    // fp32/1024 defaults overshot the direct pool with the vk buffers added
+    // on top; audio_options backend=cpu keeps the slow-but-safe fallback.
+    const char *backend_name = backend == "cpu" ? "cpu" : "vulkan";
+    const audiocpp_backend_config backend_config = {backend_name, 0, 8};
     if (audiocpp_session_create(g_model, "midi", "offline", &backend_config, g_options,
                                 &g_session) != AUDIOCPP_OK)
     {
