@@ -388,6 +388,26 @@ extern "C" void ps5_sheetsage_release()
     release_engine();
 }
 
+// The SheetSage weight stores are 1-3 GiB host buffers; the trace shows them
+// landing in libc's 284 MiB flexible heap even though the direct pool reports
+// 11 GiB free. One probe line settles where the title heap actually is: its
+// reserved range, what it has mapped, how many allocations libc had to catch,
+// and whether a fresh 1 GiB block from it succeeds right now.
+struct HeapStatsProbe
+{
+    void *range_base;
+    std::size_t range_bytes;
+    std::size_t mapped_bytes;
+    std::size_t peak_bytes;
+    unsigned segments;
+    unsigned padding;
+    unsigned long long libc_fallbacks;
+    unsigned arenas;
+};
+extern "C" void ps5_heap_stats(HeapStatsProbe *) noexcept;
+extern "C" void *ps5_heap_malloc(std::size_t) noexcept;
+extern "C" void ps5_heap_free(void *) noexcept;
+
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
                                         std::size_t response_capacity,
                                         std::uint64_t *elapsed_microseconds,
@@ -477,6 +497,20 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
             std::snprintf(line, sizeof(line), "request ok, session_run begin (%.1fs audio)",
                           static_cast<double>(samples.size()) / sample_rate);
             stage_log(line);
+        }
+        {
+            HeapStatsProbe stats{};
+            ps5_heap_stats(&stats);
+            void *probe = ps5_heap_malloc(1ULL << 30);
+            char line[256];
+            std::snprintf(line, sizeof(line),
+                          "title heap: base=%p range=%zu MiB mapped=%zu MiB seg=%u fb=%llu "
+                          "arenas=%u | 1GiB probe=%s", stats.range_base, stats.range_bytes >> 20,
+                          stats.mapped_bytes >> 20, stats.segments, stats.libc_fallbacks,
+                          stats.arenas, probe ? "OK" : "FAIL");
+            stage_log(line);
+            if (probe)
+                ps5_heap_free(probe);
         }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
