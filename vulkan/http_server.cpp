@@ -411,6 +411,7 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
         {"/voice-catalog.js", "voice-catalog.js", "text/javascript; charset=utf-8"},
         {"/voice-recording.js", "voice-recording.js", "text/javascript; charset=utf-8"},
         {"/lame.min.js", "lame.min.js", "text/javascript; charset=utf-8"},
+        {"/mp3-worker.js", "mp3-worker.js", "text/javascript; charset=utf-8"},
         {"/music", "music.html", "text/html; charset=utf-8"},
         {"/music.css", "music.css", "text/css; charset=utf-8"},
         {"/music.js", "music.js", "text/javascript; charset=utf-8"},
@@ -1547,7 +1548,49 @@ bool media_path_allowed(const std::string &path)
     return false;
 }
 
-void handle_media_file(const NetApi &api, int sock, const char *path)
+bool header_name_eq(const char *a, const char *b, std::size_t n)
+{
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+        if (ca != cb)
+            return false;
+    }
+    return true;
+}
+
+// Case-insensitive header scan within the request block [req, hdr_end).
+// Returns pointer into the request buffer (value start) or nullptr.
+const char *find_header(const char *req, const char *hdr_end, const char *name)
+{
+    const std::size_t nlen = std::strlen(name);
+    for (const char *p = req; p != nullptr && p < hdr_end;)
+    {
+        const char *eol = std::strstr(p, "\r\n");
+        if (eol == nullptr || eol > hdr_end)
+            break;
+        const char *colon = nullptr;
+        for (const char *q = p; q < eol && q - p != (long)nlen; ++q)
+            if (*q == ':')
+            {
+                colon = q;
+                break;
+            }
+        if (colon != nullptr && colon - p == (long)nlen && header_name_eq(p, name, nlen))
+        {
+            const char *v = colon + 1;
+            while (v < eol && (*v == ' ' || *v == '\t'))
+                ++v;
+            return v;
+        }
+        p = eol + 2;
+    }
+    return nullptr;
+}
+
+void handle_media_file(const NetApi &api, int sock, const char *path, const char *range)
 {
     if (!media_path_allowed(path))
     {
@@ -1568,27 +1611,92 @@ void handle_media_file(const NetApi &api, int sock, const char *path)
     const bool is_png = path_length >= 4 && std::strcmp(path + path_length - 4, ".png") == 0;
     const bool is_json = path_length >= 5 && std::strcmp(path + path_length - 5, ".json") == 0;
     const bool is_text = path_length >= 4 && std::strcmp(path + path_length - 4, ".txt") == 0;
+    const char *ctype = is_wav    ? "audio/wav"
+                        : is_png  ? "image/png"
+                        : is_json ? "application/json"
+                        : is_text ? "text/plain; charset=utf-8"
+                                  : "application/octet-stream";
     if (size < 0 || size > 64 * 1024 * 1024)
     {
         std::fclose(file);
         send_status(api, sock, "500 Internal Server Error", "text/plain", "Media unavailable.");
         return;
     }
+    // Single-range support (iOS Safari refuses to seek media without 206/Accept-Ranges).
+    long start = 0, end = size - 1;
+    bool partial = false;
     char header[256];
-    std::snprintf(header, sizeof(header),
-                  "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
-                  "X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\nConnection: "
-                  "close\r\n\r\n",
-                  is_wav    ? "audio/wav"
-                  : is_png  ? "image/png"
-                  : is_json ? "application/json"
-                  : is_text ? "text/plain; charset=utf-8"
-                            : "application/octet-stream",
-                  size);
+    if (range != nullptr && std::strncmp(range, "bytes=", 6) == 0)
+    {
+        const char *v = range + 6;
+        char *dash = std::strchr(v, '-');
+        if (dash != nullptr)
+        {
+            const bool have_start = dash != v;
+            const bool have_end = dash[1] != '\0' && dash[1] != ' ';
+            long s = 0, e = 0;
+            if (have_start)
+                s = std::strtol(v, nullptr, 10);
+            if (have_end)
+                e = std::strtol(dash + 1, nullptr, 10);
+            if (!have_start && have_end)
+            {
+                s = size - e; // suffix range: last N bytes
+                e = size - 1;
+            }
+            else if (have_start && !have_end)
+            {
+                e = size - 1;
+            }
+            if (s >= 0 && e < size && s <= e)
+            {
+                start = s;
+                end = e;
+                partial = true;
+            }
+            else
+            {
+                std::fclose(file);
+                std::snprintf(header, sizeof(header),
+                              "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */%ld\r\n"
+                              "Content-Length: 0\r\nConnection: close\r\n\r\n", size);
+                send_all(api, sock, header, std::strlen(header));
+                return;
+            }
+        }
+    }
+    if (partial)
+    {
+        std::snprintf(header, sizeof(header),
+                      "HTTP/1.1 206 Partial Content\r\nContent-Type: %s\r\n"
+                      "Content-Range: bytes %ld-%ld/%ld\r\nContent-Length: %ld\r\n"
+                      "Accept-Ranges: bytes\r\nX-Content-Type-Options: nosniff\r\n"
+                      "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                      ctype, start, end, size, end - start + 1);
+        std::fseek(file, start, SEEK_SET);
+    }
+    else
+    {
+        std::snprintf(header, sizeof(header),
+                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
+                      "Accept-Ranges: bytes\r\nX-Content-Type-Options: nosniff\r\nCache-Control: "
+                      "no-cache\r\nConnection: close\r\n\r\n",
+                      ctype, size);
+    }
     send_all(api, sock, header, std::strlen(header));
     char buffer[16384];
-    for (std::size_t count; (count = std::fread(buffer, 1, sizeof(buffer), file)) != 0;)
+    long remaining = end - start + 1;
+    for (std::size_t count;
+         remaining > 0 &&
+         (count = std::fread(buffer, 1,
+                             sizeof(buffer) < static_cast<std::size_t>(remaining)
+                                 ? sizeof(buffer)
+                                 : static_cast<std::size_t>(remaining),
+                             file)) != 0;)
+    {
         send_all(api, sock, buffer, count);
+        remaining -= static_cast<long>(count);
+    }
     std::fclose(file);
 }
 
@@ -2089,6 +2197,8 @@ void handle_connection(const NetApi &api, int sock)
     std::sscanf(request, "%7s %255s", method, path);
     const char *header_end = std::strstr(request, "\r\n\r\n");
     const char *body = header_end != nullptr ? header_end + 4 : "";
+    const char *range_header =
+        header_end != nullptr ? find_header(request, header_end, "Range") : nullptr;
 
 #ifdef PROSPERO_UI_VULKAN
     if (std::strcmp(method, "GET") == 0 && serve_ui_asset(api, sock, path))
@@ -2114,7 +2224,7 @@ void handle_connection(const NetApi &api, int sock)
 #endif
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
     else if (std::strcmp(method, "GET") == 0 && std::strncmp(path, "/download0/", 11) == 0)
-        handle_media_file(api, sock, path);
+        handle_media_file(api, sock, path, range_header);
     else if (std::strncmp(path, "/api/conversations", 18) == 0 &&
              handle_conversations(api, sock, method, path, body))
         ;

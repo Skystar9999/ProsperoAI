@@ -103,42 +103,68 @@
       if (!r.ok) throw new Error('download failed: HTTP ' + r.status);
       return r.arrayBuffer();
     }).then(function (buf) {
-      var Ctx = window.AudioContext || window.webkitAudioContext;
-      var ctx = new Ctx();
-      return new Promise(function (res, rej) {
-        ctx.decodeAudioData(buf, res, function (e) { rej(new Error('decode failed: ' + e)); });
-      }).then(function (dec) {
-        var rate = dec.sampleRate, ch = Math.min(2, dec.numberOfChannels);
-        var enc = new lamejs.Mp3Encoder(ch, rate, 320);
-        var chans = []; for (var c = 0; c < ch; c++) {
-          var f = dec.getChannelData(c), i16 = new Int16Array(f.length);
-          for (var i = 0; i < f.length; i++) { var v = Math.max(-1, Math.min(1, f[i])); i16[i] = v < 0 ? v * 32768 : v * 32767; }
-          chans.push(i16);
-        }
-        var BLOCK = 1152, out = [], total = chans[0].length;
-        for (var off = 0; off < total; off += BLOCK) {
-          var a = chans[0].subarray(off, off + BLOCK);
-          var b = ch > 1 ? chans[1].subarray(off, off + BLOCK) : null;
-          var chunk = b ? enc.encodeBuffer(a, b) : enc.encodeBuffer(a);
-          if (chunk.length) out.push(new Uint8Array(chunk));
-          if (off % (BLOCK * 200) === 0)
-            setStatus('Encoding MP3... ' + Math.round(off / total * 100) + '%', 'busy');
-        }
-        var end = enc.flush(); if (end.length) out.push(new Uint8Array(end));
-        try { ctx.close(); } catch (e) {}
-        var blob = new Blob(out, { type: 'audio/mpeg' });
-        var a2 = document.createElement('a');
-        a2.href = URL.createObjectURL(blob);
-        a2.download = name.replace(/\.[a-z0-9]+$/i, '') + '.mp3';
-        document.body.appendChild(a2); a2.click();
-        setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
-        done(blob.size);
-      });
+      // Fast path: parse PCM WAV ourselves inside a Web Worker (no tab freeze).
+      try {
+        var w = new Worker('/mp3-worker.js');
+        w.onmessage = function (e) {
+          var d = e.data || {};
+          if (d.pct !== undefined) { setStatus('Encoding MP3... ' + d.pct + '%', 'busy'); return; }
+          if (d.done) {
+            w.terminate();
+            var blob = new Blob([d.mp3], { type: 'audio/mpeg' });
+            var a2 = document.createElement('a');
+            a2.href = URL.createObjectURL(blob);
+            a2.download = name.replace(/\.[a-z0-9]+$/i, '') + '.mp3';
+            document.body.appendChild(a2); a2.click();
+            setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
+            done(blob.size);
+            return;
+          }
+          if (d.error) { w.terminate(); fail(new Error(d.error)); return; }
+          if (d.fallback) { w.terminate(); mp3DecodeFallback(buf, name, done, fail); }
+        };
+        w.onerror = function () { w.terminate(); mp3DecodeFallback(buf, name, done, fail); };
+        w.postMessage({ buf: buf }, [buf]);
+        return;
+      } catch (e) { /* Worker ctor unsupported (very old browser) */ }
+      mp3DecodeFallback(buf, name, done, fail);
+    }).catch(fail);
+  }
+  function mp3DecodeFallback(buf, name, done, fail) {
+    setStatus('Converting to MP3 (compat mode, page may pause)...', 'busy');
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    var ctx = new Ctx();
+    new Promise(function (res, rej) {
+      ctx.decodeAudioData(buf, res, function (e) { rej(new Error('decode failed: ' + e)); });
+    }).then(function (dec) {
+      var rate = dec.sampleRate, ch = Math.min(2, dec.numberOfChannels);
+      var enc = new lamejs.Mp3Encoder(ch, rate, 320);
+      var chans = []; for (var c = 0; c < ch; c++) {
+        var f = dec.getChannelData(c), i16 = new Int16Array(f.length);
+        for (var i = 0; i < f.length; i++) { var v = Math.max(-1, Math.min(1, f[i])); i16[i] = v < 0 ? v * 32768 : v * 32767; }
+        chans.push(i16);
+      }
+      var BLOCK = 1152, out = [], total = chans[0].length;
+      for (var off = 0; off < total; off += BLOCK) {
+        var a = chans[0].subarray(off, off + BLOCK);
+        var b = ch > 1 ? chans[1].subarray(off, off + BLOCK) : null;
+        var chunk = b ? enc.encodeBuffer(a, b) : enc.encodeBuffer(a);
+        if (chunk.length) out.push(new Uint8Array(chunk));
+      }
+      var end = enc.flush(); if (end.length) out.push(new Uint8Array(end));
+      try { ctx.close(); } catch (e) {}
+      var blob = new Blob(out, { type: 'audio/mpeg' });
+      var a2 = document.createElement('a');
+      a2.href = URL.createObjectURL(blob);
+      a2.download = name.replace(/\.[a-z0-9]+$/i, '') + '.mp3';
+      document.body.appendChild(a2); a2.click();
+      setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
+      done(blob.size);
     }).catch(fail);
   }
   function makePlayer(url, filename, isMp3Source) {
     var wrap = document.createElement('div'); wrap.className = 'pl';
-    var audio = new Audio(); audio.preload = 'none'; audio.src = url;
+    var audio = new Audio(); audio.preload = 'metadata'; audio.src = url;
     var row = document.createElement('div'); row.className = 'pl-row';
     var play = document.createElement('button'); play.type = 'button'; play.className = 'pl-play'; play.textContent = '▶';
     var tm = document.createElement('span'); tm.className = 'pl-time'; tm.textContent = '0:00 / --:--';
