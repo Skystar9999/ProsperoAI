@@ -560,5 +560,20 @@
         "sha256": "b2b1b8dfb5cc5f024bafc373121c6aba3f66f9a5a0269e243470a1de16a33186"
       }
     ]
+  },
+  {
+    "id": "sheetsage2-orig",
+    "name": "SheetSage2 Cover (Vulkan)",
+    "kind": 2,
+    "repository": "audio-cpp/SheetSage2-GGUF",
+    "revision": "4e88814450385334524e50df43724af583f74206",
+    "files": [
+      {
+        "source": "sheetsage2-orig.gguf",
+        "path": "sheetsage2-orig.gguf",
+        "size": 2708224256,
+        "sha256": "d858bfdf5ac7be16261ac6ee38754d6fca502149131b44a5262b4039fb72876e"
+      }
+    ]
   }
 ]

@@ -1853,6 +1853,116 @@ void handle_music_abc(const NetApi &api, int sock, const char *body)
     send_json(api, sock, nlohmann::json{{"ok", true}, {"path", path}}.dump().c_str());
 }
 
+// Music Studio Cover: append a base64 chunk to work/audio/<name>.wav. The
+// request buffer is 256 KiB, so the browser uploads the Web-Audio-decoded
+// 16 kHz mono WAV in ~150 KiB base64 parts: {name, part, data}. Part 0
+// truncates, later parts append; 24 MiB cap per file. The SheetSage2 adapter
+// then reads the file via audio_options.input_audio.
+bool base64_decode(const std::string &in, std::string &out)
+{
+    static signed char table[256];
+    static bool ready = false;
+    if (!ready)
+    {
+        for (int i = 0; i < 256; ++i)
+            table[i] = -1;
+        const char *alpha =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; ++i)
+            table[static_cast<unsigned char>(alpha[i])] = static_cast<signed char>(i);
+        ready = true;
+    }
+    out.clear();
+    out.reserve(in.size() / 4 * 3 + 3);
+    unsigned accumulator = 0;
+    int bits = 0;
+    for (const char c : in)
+    {
+        if (c == '=' || c == '\n' || c == '\r')
+            continue;
+        const signed char value = table[static_cast<unsigned char>(c)];
+        if (value < 0)
+            return false;
+        accumulator = (accumulator << 6) | static_cast<unsigned>(value);
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back(static_cast<char>((accumulator >> bits) & 0xff));
+        }
+    }
+    return true;
+}
+
+void handle_music_upload(const NetApi &api, int sock, const char *body)
+{
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("name") || !j["name"].is_string() ||
+        !j.contains("part") || !j["part"].is_number_unsigned() || !j.contains("data") ||
+        !j["data"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_upload",
+                     "Expected {name, part, data}.");
+        return;
+    }
+    const std::string name = j["name"].get<std::string>();
+    const std::string data = j["data"].get<std::string>();
+    const unsigned long long part = j["part"].get<unsigned long long>();
+    if (name.size() < 5 || name.size() > 96 || name.find("..") != std::string::npos ||
+        name.compare(name.size() - 4, 4, ".wav") != 0 || data.size() > 200 * 1024)
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_upload",
+                     "Name must be a plain *.wav within bounds (data <= 200 KiB).");
+        return;
+    }
+    for (const char c : name)
+    {
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!allowed)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_upload",
+                         "Name has forbidden characters.");
+            return;
+        }
+    }
+    std::string bytes;
+    if (!base64_decode(data, bytes) || (bytes.empty() && part != 0 && data.size() >= 4))
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_upload", "Bad base64 payload.");
+        return;
+    }
+    const std::string path = std::string("/download0/ProsperoAI/work/audio/") + name;
+    std::FILE *file = std::fopen(path.c_str(), part == 0 ? "wbx" : "ab");
+    if (!file)
+    {
+        openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
+                     path.c_str());
+        return;
+    }
+    if (part != 0 && std::fseek(file, 0, SEEK_END) == 0 &&
+        std::ftell(file) + static_cast<long>(bytes.size()) > 24 * 1024 * 1024)
+    {
+        std::fclose(file);
+        openai_error(api, sock, "413 Payload Too Large", "upload_too_large",
+                     "Audio file exceeds 24 MiB.");
+        return;
+    }
+    const bool written = bytes.empty() ||
+                         std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
+    const bool complete = std::ferror(file) == 0;
+    std::fclose(file);
+    if (!written || !complete)
+    {
+        openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
+                     path.c_str());
+        return;
+    }
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"part", part}}.dump().c_str());
+}
+
 // Music Studio: delete a listed file (wav/mp3/abc) from work/audio by name.
 void handle_music_delete(const NetApi &api, int sock, const char *body)
 {
@@ -2032,6 +2142,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_files(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/upload") == 0)
+        handle_music_upload(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/rename") == 0)
         handle_music_rename(api, sock, body);
     else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)

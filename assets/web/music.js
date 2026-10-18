@@ -3,7 +3,7 @@
   'use strict';
   var KEY = 'prospero-key';
   var AUDIO_DIR = '/download0/ProsperoAI/work/audio/';
-  var MUSIC_RE = /yue2|yue|ace[-_]?step|kokoro|chatterbox/i;
+  var MUSIC_RE = /yue2|yue|ace[-_]?step|kokoro|chatterbox|sheetsage/i;
   var $ = function (id) { return document.getElementById(id); };
 
   function apiKey() { return localStorage.getItem(KEY) || ''; }
@@ -277,6 +277,112 @@
     }).then(function () { btn.disabled = false; });
   }
   $('generate').addEventListener('click', runGeneration);
+
+  // ---- cover (audio -> ABC via SheetSage2) ----
+  // The browser decodes any browser-supported audio (MP3/WAV/OGG/M4A) to
+  // 16 kHz mono PCM16 with Web Audio, uploads it in <=200 KiB base64 parts
+  // (the console's request buffer is 256 KiB), then runs the sheetsage2
+  // model through the standard /api/generate path. The score artifact is
+  // loaded straight into the ABC editor.
+  $('cover-go').addEventListener('click', function () {
+    var file = $('cover-file').files && $('cover-file').files[0];
+    var btn = $('cover-go');
+    if (!file || btn.disabled) return;
+    btn.disabled = true;
+    var t0 = Date.now();
+    var cstatus = function (m, c) {
+      var el = $('cover-status');
+      el.textContent = m || '';
+      el.className = c || '';
+    };
+    var wav = null, name = '';
+    cstatus('Decoding ' + file.name + '...', 'busy');
+    file.arrayBuffer().then(function (buf) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC || !AudioContext.prototype.decodeAudioData)
+        throw new Error('this browser has no Web Audio decoder');
+      var ctx = new AC();
+      var p = ctx.decodeAudioData(buf);
+      return p.then(function (ab) { return ab; });
+    }).then(function (ab) {
+      var rate = 16000;
+      var frames = Math.max(1, Math.ceil(ab.duration * rate));
+      if (frames > 300 * rate) throw new Error('audio longer than 5 min — trim it first');
+      var off = new OfflineAudioContext(1, frames, rate);
+      var src = off.createBufferSource();
+      src.buffer = ab;
+      src.connect(off.destination);
+      src.start();
+      return off.startRendering();
+    }).then(function (rendered) {
+      var pcm = rendered.getChannelData(0);
+      var view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+      var ws = function (o, s) { for (var i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+      ws(0, 'RIFF'); view.setUint32(4, 36 + pcm.length * 2, true);
+      ws(8, 'WAVE'); ws(12, 'fmt ');
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+      view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      ws(36, 'data'); view.setUint32(40, pcm.length * 2, true);
+      for (var i = 0; i < pcm.length; i++) {
+        var v = Math.max(-1, Math.min(1, pcm[i]));
+        view.setInt16(44 + i * 2, v < 0 ? v * 32768 : v * 32767, true);
+      }
+      wav = new Uint8Array(view.buffer);
+      var base = file.name.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+      base = (base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60) || 'cover').toLowerCase();
+      name = base + '-src.wav';
+      var CHUNK = 140 * 1024;
+      var parts = Math.max(1, Math.ceil(wav.length / CHUNK));
+      var part = 0;
+      var b64 = function (u8) {
+        var s = '', CH = 0x8000;
+        for (var i = 0; i < u8.length; i += CH)
+          s += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + CH, u8.length)));
+        return btoa(s);
+      };
+      var next = function () {
+        if (part >= parts) return Promise.resolve();
+        cstatus('Uploading ' + name + ': part ' + (part + 1) + '/' + parts + ' (' +
+          Math.round(100 * part / parts) + '%)', 'busy');
+        var slice = wav.subarray(part * CHUNK, Math.min((part + 1) * CHUNK, wav.length));
+        return api('/api/music/upload', { name: name, part: part, data: b64(slice) }, 120000)
+          .then(function () { part++; return next(); });
+      };
+      return next();
+    }).then(function () {
+      cstatus('Transcribing with SheetSage2 (first run loads the 2.7 GB model — be patient)...',
+        'busy');
+      return api('/api/settings/runtime',
+        { audio_options: 'input_audio=' + AUDIO_DIR + name }, 30000)
+        .then(function () {
+          return api('/api/generate',
+            { model: 'sheetsage2-orig', prompt: 'transcribe ' + name }, 1800000);
+        });
+    }).then(function (j) {
+      var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
+      var m = resp.match(/\/download0\/\S+?\.abc/);
+      if (!m) throw new Error('no ABC artifact in response: ' + resp.slice(0, 220));
+      var path = m[0].replace(/["',).]+$/, '');
+      var fname = path.substring(path.lastIndexOf('/') + 1);
+      return fetch(AUDIO_DIR + encodeURIComponent(fname)).then(function (r) {
+        if (!r.ok) throw new Error('fetch score HTTP ' + r.status);
+        return r.text();
+      }).then(function (t) {
+        $('abc').value = t;
+        $('abc-name').value = name.replace(/-src\.wav$/, '-cover.abc');
+        cstatus('Cover done in ' + Math.round((Date.now() - t0) / 1000) +
+          's — score loaded into the editor ✅', 'ok');
+        setStatus('Score ' + fname + ' loaded — press GENERATE to make it a song', 'ok');
+        loadLibrary(); loadAbcSelect();
+      });
+    }).catch(function (e) {
+      cstatus('Cover failed: ' + (e && e.message ? e.message : e), 'err');
+    }).then(function () {
+      $('cover-file').value = '';
+      btn.disabled = false;
+    });
+  });
   $('regen').addEventListener('click', function () {
     var s = $('seed');
     s.value = String(Math.min(4294967295, (parseInt(s.value, 10) || 42) + 1));

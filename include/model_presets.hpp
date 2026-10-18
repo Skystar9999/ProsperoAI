@@ -112,6 +112,9 @@ inline constexpr PresetFile preset_files_12[] = {
     {"sidecars/yue2-vae-config.json", "sidecars/yue2-vae-config.json", "f0191bb9694009956de44e0c361a6f1334760be4c8f848e599bde242a54a0970", 1378ULL, nullptr, nullptr},
     {"sidecars/yue2-qwen.tiktoken", "sidecars/yue2-qwen.tiktoken", "b2b1b8dfb5cc5f024bafc373121c6aba3f66f9a5a0269e243470a1de16a33186", 2561218ULL, nullptr, nullptr},
 };
+inline constexpr PresetFile preset_files_13[] = {
+    {"sheetsage2-orig.gguf", "sheetsage2-orig.gguf", "d858bfdf5ac7be16261ac6ee38754d6fca502149131b44a5262b4039fb72876e", 2708224256ULL, nullptr, nullptr},
+};
 inline constexpr Preset presets[] = {
     {"Mistral-7B-Instruct-v0.3.Q4_0.gguf", "Mistral 7B Instruct v0.3 Q4_0", "QuantFactory/Mistral-7B-Instruct-v0.3-GGUF", "a83fbb7c79c1afd59dfcce75272591cbe5a2412f", 0, 4113289152ULL, preset_files_0, 1},
     {"qwen3.8-9b-distill-q4-k-m.gguf", "Qwen3.8 9B Distill Q4_K_M", "empero-ai/Qwen3.8-9B-Distill-GGUF", "760121cd70bb4c36b2b5ec58eb765e0df5987efe", 0, 5780090176ULL, preset_files_1, 1},
@@ -128,6 +131,7 @@ inline constexpr Preset presets[] = {
     {"bohf-12b-moe-3a-q3-k-m.gguf", "BoHF 12B MoE 3A Q3_K_M", "theprint/Bohf-12B-MoE-3A-GGUF", "a0ab1f1455f4bad47f31c8c52f6aec1569699da5", 0, 4703718432ULL, preset_files_10, 1},
     {"chatterbox-500m-q8-0", "Chatterbox 500M Q8_0 (Vulkan)", "audio-cpp/audio.cpp-gguf", "f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5", 3, 2092546523ULL, preset_files_11, 10},
     {"yue2-3b-q8-0", "YuE2 3B Q8_0 (Vulkan)", "ngquocvinh/YuE2-3B-GGUF", "9711e46e444185449185914dfb8694e6ce4069c9", 2, 4531984757ULL, preset_files_12, 6},
+    {"sheetsage2-orig", "SheetSage2 Cover (Vulkan)", "audio-cpp/SheetSage2-GGUF", "4e88814450385334524e50df43724af583f74206", 2, 2708224256ULL, preset_files_13, 1},
 };
 inline constexpr std::size_t preset_count = sizeof(presets) / sizeof(presets[0]);
 }

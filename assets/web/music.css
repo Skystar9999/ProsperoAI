@@ -21,6 +21,15 @@ textarea{resize:vertical;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
 #abc-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 #abc-actions input{flex:1 1 110px;min-width:0}
 #abc-actions select{flex:1 1 140px;min-width:0}
+#cover-row{margin-top:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;background:var(--panel2)}
+#cover-row label{display:block;margin-bottom:6px;color:var(--dim)}
+#cover-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#cover-actions button{background:var(--accent);color:#181014;border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer}
+#cover-actions button:disabled{opacity:.5;cursor:default}
+#cover-status{margin-top:8px;color:var(--dim);min-height:20px}
+#cover-status.err{color:var(--err)}
+#cover-status.busy{color:var(--accent2)}
+#cover-status.ok{color:var(--ok)}
 button{background:var(--accent);color:#181008;border:0;border-radius:8px;padding:9px 14px;font-weight:700;cursor:pointer}
 button:hover{filter:brightness(1.1)}
 button:disabled{opacity:.45;cursor:wait}

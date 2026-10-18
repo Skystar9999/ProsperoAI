@@ -9,7 +9,7 @@
 <body>
 <header>
   <div id="brand">🎵 Prospero <span>Music Studio</span></div>
-  <span id="uiver" title="UI version">UI v23</span>
+  <span id="uiver" title="UI version">UI v24</span>
   <select id="model" title="Music model"></select>
   <span id="status-dot" class="dot"></span>
 </header>
@@ -33,6 +33,14 @@ Write your lyrics here..."></textarea>
           <input id="abc-disk" type="file" accept=".abc,text/plain" hidden>
           <button id="abc-open" type="button">📁 From file</button>
           <button id="abc-clear" type="button">✖ Clear</button>
+        </div>
+        <div id="cover-row">
+          <label for="cover-file">Cover: upload a song (MP3/WAV/…) — SheetSage2 transcribes it to ABC on the console</label>
+          <div id="cover-actions">
+            <input id="cover-file" type="file" accept="audio/*">
+            <button id="cover-go" type="button">🎤 Convert to ABC</button>
+          </div>
+          <div id="cover-status"></div>
         </div>
       </div>
       <div id="opts-col">
