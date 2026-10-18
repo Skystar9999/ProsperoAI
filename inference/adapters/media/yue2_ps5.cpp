@@ -262,7 +262,11 @@ void log_memory(const char *stage)
 // resident model ("Oobleck audio VAE decode backend buffer allocation
 // failed"). Clamp the tile keys to the values proven on PS5 on every model
 // load, so installer re-downloads of the hash-pinned sidecar cannot resurrect
-// the failure. Keys absent (older configs) get the proven pair appended.
+// the failure. preset_installed() checks this sidecar's BYTE SIZE against the
+// pin (1378), not its hash, so the rewrite must preserve the original size
+// exactly or the model flips to "not installed" after every update. We pad
+// the tail with spaces (legal JSON whitespace) back to the original length.
+// Keys absent (older configs) get the proven pair appended.
 void clamp_vae_tiles(const std::string &root)
 {
     const std::string path = root + "/sidecars/yue2-vae-config.json";
@@ -279,6 +283,7 @@ void clamp_vae_tiles(const std::string &root)
     {
         return;
     }
+    const std::size_t original_size = text.size();
     auto tile_value = [&text](const char *key, long long fallback) -> long long
     {
         const std::size_t k = text.find(key);
@@ -329,11 +334,25 @@ void clamp_vae_tiles(const std::string &root)
     }
     if (changed)
     {
-        if (std::FILE *w = std::fopen(path.c_str(), "wb"))
+        // Preserve the pinned byte size exactly: preset_installed() compares
+        // st_size to the pin (1378) and a shorter/longer file reads as
+        // "not installed". Pad the tail with spaces (JSON ignores trailing
+        // whitespace) back to the original length; if the clamp somehow grew
+        // the text past it, skip the write rather than break the pin.
+        if (text.size() < original_size)
+            text.append(original_size - text.size(), ' ');
+        if (text.size() == original_size)
         {
-            std::fwrite(text.data(), 1, text.size(), w);
-            std::fclose(w);
-            log_error("clamped VAE decode tiles to 512/32 for PS5 VRAM budget");
+            if (std::FILE *w = std::fopen(path.c_str(), "wb"))
+            {
+                std::fwrite(text.data(), 1, text.size(), w);
+                std::fclose(w);
+                log_error("clamped VAE decode tiles to 512/32 for PS5 VRAM budget");
+            }
+        }
+        else
+        {
+            log_error("VAE tile clamp skipped: rewrite would change pinned size");
         }
     }
 }
@@ -343,6 +362,9 @@ bool ensure_engine(const std::string &root, void (*progress)(const char *))
     if (g_model && g_session && g_model_root == root)
         return true;
     release_engine();
+    // Rewrite PS5 VAE decode tiles before the engine parses the sidecar,
+    // preserving the pinned byte size so the installed-check keeps passing.
+    clamp_vae_tiles(root);
     const audiocpp_model_config model_config = {"yue2", nullptr, nullptr, nullptr};
     if (audiocpp_registry_create(nullptr, &g_registry) != AUDIOCPP_OK ||
         audiocpp_model_load(g_registry, root.c_str(), &model_config, nullptr, &g_model) !=
