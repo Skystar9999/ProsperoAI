@@ -406,6 +406,7 @@ struct HeapStatsProbe
 };
 extern "C" void ps5_heap_stats(HeapStatsProbe *) noexcept;
 extern "C" void *ps5_heap_malloc(std::size_t) noexcept;
+extern "C" void *ps5_heap_memalign(std::size_t, std::size_t) noexcept;
 extern "C" void ps5_heap_free(void *) noexcept;
 
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
@@ -502,15 +503,37 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
             HeapStatsProbe stats{};
             ps5_heap_stats(&stats);
             void *probe = ps5_heap_malloc(1ULL << 30);
+            // Same call ggml_aligned_malloc makes, byte for byte: if the
+            // wrapper serves this but the run still dies, the run's failure
+            // is a state change between here and there, not the routing.
+            void *pma = nullptr;
+            const int pma_rc = posix_memalign(&pma, 64, 1ULL << 30);
+            void *hma = ps5_heap_memalign(64, 1ULL << 30);
             char line[256];
             std::snprintf(line, sizeof(line),
                           "title heap: base=%p range=%zu MiB mapped=%zu MiB seg=%u fb=%llu "
-                          "arenas=%u | 1GiB probe=%s", stats.range_base, stats.range_bytes >> 20,
-                          stats.mapped_bytes >> 20, stats.segments, stats.libc_fallbacks,
-                          stats.arenas, probe ? "OK" : "FAIL");
+                          "arenas=%u | 1GiB probe=%s | pma rc=%d ptr=%p | hma=%p", stats.range_base,
+                          stats.range_bytes >> 20, stats.mapped_bytes >> 20, stats.segments,
+                          stats.libc_fallbacks, stats.arenas, probe ? "OK" : "FAIL", pma_rc, pma,
+                          hma);
             stage_log(line);
             if (probe)
                 ps5_heap_free(probe);
+            if (pma_rc == 0)
+                std::free(pma);
+            if (hma)
+                ps5_heap_free(hma);
+            // abort() runs atexit: capture the heap at the death moment.
+            std::atexit([] {
+                HeapStatsProbe dead{};
+                ps5_heap_stats(&dead);
+                char dead_line[192];
+                std::snprintf(dead_line, sizeof(dead_line),
+                              "at-death heap: mapped=%zu MiB seg=%u fb=%llu arenas=%u",
+                              dead.mapped_bytes >> 20, dead.segments, dead.libc_fallbacks,
+                              dead.arenas);
+                stage_log(dead_line);
+            });
         }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
