@@ -1947,7 +1947,7 @@ void handle_music_upload(const NetApi &api, int sock, const char *body)
         return;
     }
     const std::string path = std::string("/download0/ProsperoAI/work/audio/") + name;
-    std::FILE *file = std::fopen(path.c_str(), part == 0 ? "wbx" : "ab");
+    std::FILE *file = std::fopen(path.c_str(), part == 0 ? "wb" : "ab");
     if (!file)
     {
         openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
