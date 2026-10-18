@@ -1629,7 +1629,7 @@ void handle_media_file(const NetApi &api, int sock, const char *path, const char
     if (range != nullptr && std::strncmp(range, "bytes=", 6) == 0)
     {
         const char *v = range + 6;
-        char *dash = std::strchr(v, '-');
+        const char *dash = std::strchr(v, '-');
         if (dash != nullptr)
         {
             const bool have_start = dash != v;
