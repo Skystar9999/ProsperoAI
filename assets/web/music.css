@@ -59,3 +59,19 @@ h2 button{padding:3px 9px;font-size:13px}
 #uiver{color:var(--dim);font-size:11px;border:1px solid var(--line);border-radius:8px;padding:2px 8px}
 #key-bar{position:fixed;bottom:0;left:0;right:0;display:flex;gap:10px;padding:14px 22px;background:var(--panel);border-top:1px solid var(--line)}
 #key-bar input{flex:1}
+
+/* ---- custom player (UI v25) ---- */
+.pl{margin:8px 0 4px}
+.pl-row{display:flex;align-items:center;gap:10px}
+.pl-play{width:44px;height:44px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--accent);color:#fff;font-size:16px;line-height:1;cursor:pointer}
+.pl-time{color:var(--dim);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pl-menu{flex:none;background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:6px 10px;font-size:16px;cursor:pointer}
+.pl-menu-box{position:absolute;right:0;top:36px;z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.45);display:flex;flex-direction:column;min-width:230px}
+.pl-menu-box a,.pl-menu-box button{padding:10px 14px;color:var(--ink);background:transparent;border:0;text-align:left;font-size:13px;text-decoration:none;cursor:pointer}
+.pl-menu-box a:hover,.pl-menu-box button:hover{background:var(--panel2)}
+.pl-row{position:relative}
+.pl-seek{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;margin-top:2px;cursor:pointer}
+.pl-seek::-webkit-slider-runnable-track{height:10px;border-radius:5px;background:var(--panel2);border:1px solid var(--line)}
+.pl-seek::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--accent);border:2px solid #fff;margin-top:-7px;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.pl-seek::-moz-range-track{height:10px;border-radius:5px;background:var(--panel2);border:1px solid var(--line)}
+.pl-seek::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--accent);border:2px solid #fff}

@@ -89,6 +89,111 @@
     return lines.join('\n');
   }
 
+  // ---- custom audio player (big seekbar under play, ⋮ menu with WAV/MP3 download) ----
+  var activePlayer = null;
+  function fmtTime(s) {
+    if (!isFinite(s)) return '--:--';
+    s = Math.max(0, Math.round(s));
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  function mp3FromUrl(url, name, done, fail) {
+    if (!window.lamejs) { fail(new Error('MP3 encoder not loaded')); return; }
+    setStatus('Converting to MP3 — keep this page open...', 'busy');
+    fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('download failed: HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      var ctx = new Ctx();
+      return new Promise(function (res, rej) {
+        ctx.decodeAudioData(buf, res, function (e) { rej(new Error('decode failed: ' + e)); });
+      }).then(function (dec) {
+        var rate = dec.sampleRate, ch = Math.min(2, dec.numberOfChannels);
+        var enc = new lamejs.Mp3Encoder(ch, rate, 320);
+        var chans = []; for (var c = 0; c < ch; c++) {
+          var f = dec.getChannelData(c), i16 = new Int16Array(f.length);
+          for (var i = 0; i < f.length; i++) { var v = Math.max(-1, Math.min(1, f[i])); i16[i] = v < 0 ? v * 32768 : v * 32767; }
+          chans.push(i16);
+        }
+        var BLOCK = 1152, out = [], total = chans[0].length;
+        for (var off = 0; off < total; off += BLOCK) {
+          var a = chans[0].subarray(off, off + BLOCK);
+          var b = ch > 1 ? chans[1].subarray(off, off + BLOCK) : null;
+          var chunk = b ? enc.encodeBuffer(a, b) : enc.encodeBuffer(a);
+          if (chunk.length) out.push(new Uint8Array(chunk));
+          if (off % (BLOCK * 200) === 0)
+            setStatus('Encoding MP3... ' + Math.round(off / total * 100) + '%', 'busy');
+        }
+        var end = enc.flush(); if (end.length) out.push(new Uint8Array(end));
+        try { ctx.close(); } catch (e) {}
+        var blob = new Blob(out, { type: 'audio/mpeg' });
+        var a2 = document.createElement('a');
+        a2.href = URL.createObjectURL(blob);
+        a2.download = name.replace(/\.[a-z0-9]+$/i, '') + '.mp3';
+        document.body.appendChild(a2); a2.click();
+        setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
+        done(blob.size);
+      });
+    }).catch(fail);
+  }
+  function makePlayer(url, filename, isMp3Source) {
+    var wrap = document.createElement('div'); wrap.className = 'pl';
+    var audio = new Audio(); audio.preload = 'none'; audio.src = url;
+    var row = document.createElement('div'); row.className = 'pl-row';
+    var play = document.createElement('button'); play.type = 'button'; play.className = 'pl-play'; play.textContent = '▶';
+    var tm = document.createElement('span'); tm.className = 'pl-time'; tm.textContent = '0:00 / --:--';
+    var menuBtn = document.createElement('button'); menuBtn.type = 'button'; menuBtn.className = 'pl-menu'; menuBtn.textContent = '⋮'; menuBtn.title = 'More actions';
+    var menu = document.createElement('div'); menu.className = 'pl-menu-box'; menu.style.display = 'none';
+    var dlWav = document.createElement('a'); dlWav.href = url; dlWav.download = filename; dlWav.textContent = '⬇ Download WAV'; dlWav.style.display = isMp3Source ? 'none' : '';
+    var dlMp3 = document.createElement('button'); dlMp3.type = 'button'; dlMp3.textContent = isMp3Source ? '⬇ Download MP3' : '⬇ Download MP3 (320k, converts in browser)';
+    menu.appendChild(dlWav); menu.appendChild(dlMp3);
+    row.appendChild(play); row.appendChild(tm); row.appendChild(menuBtn); row.appendChild(menu);
+    var seek = document.createElement('input'); seek.type = 'range'; seek.className = 'pl-seek'; seek.min = '0'; seek.max = '1000'; seek.value = '0';
+    wrap.appendChild(row); wrap.appendChild(seek);
+    var dragging = false;
+    play.addEventListener('click', function () {
+      if (audio.paused) {
+        if (activePlayer && activePlayer !== api_) activePlayer.pause();
+        activePlayer = api_;
+        audio.play();
+      } else audio.pause();
+    });
+    audio.addEventListener('play', function () { play.textContent = '❚❚'; });
+    audio.addEventListener('pause', function () { play.textContent = '▶'; });
+    audio.addEventListener('ended', function () { play.textContent = '▶'; seek.value = '0'; });
+    audio.addEventListener('loadedmetadata', function () { tm.textContent = '0:00 / ' + fmtTime(audio.duration); });
+    audio.addEventListener('timeupdate', function () {
+      if (!dragging && audio.duration) {
+        seek.value = String(Math.round(audio.currentTime / audio.duration * 1000));
+        tm.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
+      }
+    });
+    seek.addEventListener('input', function () {
+      dragging = true;
+      if (audio.duration) tm.textContent = fmtTime(seek.value / 1000 * audio.duration) + ' / ' + fmtTime(audio.duration);
+    });
+    seek.addEventListener('change', function () {
+      if (audio.duration) audio.currentTime = seek.value / 1000 * audio.duration;
+      dragging = false;
+    });
+    menuBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      menu.style.display = menu.style.display === 'none' ? '' : 'none';
+    });
+    document.addEventListener('click', function () { menu.style.display = 'none'; });
+    dlMp3.addEventListener('click', function (e) {
+      e.stopPropagation(); menu.style.display = 'none';
+      if (isMp3Source) { dlWav.href = url; dlWav.download = filename; dlWav.click(); return; }
+      mp3FromUrl(url, filename,
+        function (bytes) { setStatus('MP3 ready: ' + fmtSize(bytes) + ' — check your Downloads', 'ok'); },
+        function (err) { setStatus('MP3 conversion failed: ' + err.message, 'err'); });
+    });
+    var api_ = { pause: function () { audio.pause(); } };
+    return wrap;
+  }
+
+
+
   // ---- library ----
   function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB'; }
   function fmtDate(t) { try { return new Date(t * 1000).toLocaleString('en-GB'); } catch (e) { return ''; } }
@@ -109,9 +214,7 @@
         m.appendChild(n); m.appendChild(s);
         d.appendChild(m);
         if (/\.(wav|mp3)$/i.test(f.name)) {
-          var a = document.createElement('audio');
-          a.controls = true; a.preload = 'none'; a.src = AUDIO_DIR + encodeURIComponent(f.name);
-          d.appendChild(a);
+          d.appendChild(makePlayer(AUDIO_DIR + encodeURIComponent(f.name), f.name, /\.mp3$/i.test(f.name)));
         } else {
           var ext = document.createElement('div'); ext.className = 'path';
           ext.textContent = 'ABC — use \u201cLoad into editor\u201d to edit it';
@@ -238,9 +341,7 @@
         var finish = function (finalUrl) {
           var res = $('result');
           res.innerHTML = '';
-          var a = document.createElement('audio');
-          a.controls = true; a.src = finalUrl;
-          res.appendChild(a);
+          res.appendChild(makePlayer(finalUrl, (finalUrl.match(/[^/]+(\?|$)/) || ['track.wav'])[0], /\.mp3$/i.test(finalUrl)));
           var p = document.createElement('div'); p.className = 'path'; p.textContent = finalUrl;
           res.appendChild(p);
           setStatus('Done in ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
