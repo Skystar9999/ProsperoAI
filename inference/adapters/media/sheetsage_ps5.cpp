@@ -388,6 +388,12 @@ extern "C" void ps5_sheetsage_release()
     release_engine();
 }
 
+// The SheetSage weight stores and graph pools are single 1-3 GiB ggml buffers
+// that never fit the flexible heap: route heap-exhausted allocations into the
+// runtime's direct arena (tooling/native/app_cpp_runtime.cpp). The interface
+// thread is excluded from that arena by design, so the UI cannot pin it.
+extern "C" void ps5SetDirectFallback(int) noexcept;
+
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
                                         std::size_t response_capacity,
                                         std::uint64_t *elapsed_microseconds,
@@ -396,6 +402,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
     (void)prompt;
     if (!root || !*root || !response || !response_capacity)
         return 1;
+    ps5SetDirectFallback(1);
     const auto settings = prospero_settings::get();
     const CoverSettings cover = parse_cover_options(settings.audio_options);
     {

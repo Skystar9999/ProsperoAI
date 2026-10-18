@@ -49,7 +49,7 @@ sources=(src/kv_budget.cpp src/prefix_reuse.cpp src/main.cpp src/native_app.cpp 
  inference/adapters/media/kokoro_ps5.cpp inference/adapters/media/ace_step_ps5.cpp
  inference/adapters/media/chatterbox_ps5.cpp inference/adapters/media/yue2_ps5.cpp
  inference/adapters/media/sheetsage_ps5.cpp
- tools/yue2-ggml-compat.cpp vulkan/ggml_direct_alloc.cpp
+ tools/yue2-ggml-compat.cpp
  vulkan/storage.cpp vulkan/storage_paths.cpp vulkan/elevation/elevation.cpp vulkan/debug_tee.cpp src/debug_log.cpp
  src/native_ui_update.cpp vulkan/update_ps5.cpp
  inference/adapters/llama/vulkan.cpp vulkan/http_server.cpp vulkan/model_downloader_ps5.cpp
@@ -187,9 +187,6 @@ for symbol in fopen freopen open stat lstat mkdir rmdir unlink remove rename acc
   sceKernelOpen sceKernelMkdir sceKernelRmdir sceKernelUnlink; do radv_link_flags+=("--wrap=$symbol"); done
 # What the app prints for the console's log is also kept by the debug log (vulkan/debug_tee.cpp).
 radv_link_flags+=(--wrap=sceKernelDebugOutText)
-# Large ggml CPU allocations (SheetSage weight stores, graph pools) go to direct
-# memory instead of the few-hundred-MiB flexible heap (vulkan/ggml_direct_alloc.cpp).
-radv_link_flags+=(--wrap=posix_memalign --wrap=aligned_alloc --wrap=free)
 if [[ ${PROSPERO_WITH_ONNXRUNTIME:-0} == 1 ]]; then
  radv_link_flags+=(--undefined=OrtGetApiBase)
 fi
