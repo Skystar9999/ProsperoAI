@@ -12,10 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
 #include <string>
-#include <thread>
-#include <unistd.h>
 #include <vector>
 
 extern "C"
@@ -306,14 +303,21 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
     }
     // weight_type comes from the Cover settings; the pinned GGUF ships fp32
     // and q4_0/q4_k keep the MERT encoder inside the PS5 base 12 GiB heap.
-    if (!weight_type.empty() &&
-        audiocpp_options_set(g_options, "sheetsage2.weight_type", weight_type.c_str()) !=
-            AUDIOCPP_OK)
+    // q4_0 is the validated PS5 default (build #37 E2E: 16/16 notes correct):
+    // fp32 stores + vk buffers overshoot the ~11.7 GiB direct pool.
+    if (weight_type.empty())
+        audiocpp_options_set(g_options, "sheetsage2.weight_type", "q4_0");
+    else if (audiocpp_options_set(g_options, "sheetsage2.weight_type", weight_type.c_str()) !=
+             AUDIOCPP_OK)
         log_error("sheetsage2.weight_type rejected");
     // PS5's libc heap (flexible memory) is a few hundred MiB; audio.cpp's default
-    // graph arena (1536 MiB, x8 for the encoder context) only fits on a PC. Shrink
-    // it to 32 MiB (256 MiB encoder context) unless the caller overrides it.
-    audiocpp_options_set(g_options, "sheetsage2.decoder_graph_arena_mb", "64");
+    // graph arena (1536 MiB, x8 for the encoder context) only fits on a PC. 96 MiB
+    // is the validated floor that still builds the decoder graph (build #30+).
+    audiocpp_options_set(g_options, "sheetsage2.decoder_graph_arena_mb", "96");
+    // Store contexts default to 1024 MiB each (x4 stores = 4 GiB) — combined with
+    // the arenas that exhausts the direct pool mid-run (sampler death log, build
+    // #37: pool free 971 MiB, largest 846 MiB). 640 fits the q4_0 stores.
+    audiocpp_options_set(g_options, "sheetsage2.weight_context_mb", "640");
     for (const auto &option : engine_options)
     {
         char note[160];
@@ -325,10 +329,11 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
             stage_log("engine option REJECTED");
     }
     if (progress)
-        progress("Loading SheetSage2 on Vulkan");
-    // audio_options backend=cpu isolates ggml-Vulkan faults from audio.cpp logic;
-    // anything else (including empty) keeps the GPU path.
-    const char *backend_name = backend == "cpu" ? "cpu" : "vulkan";
+        progress("Loading SheetSage2");
+    // CPU is the validated PS5 default (build #37): the Vulkan path also wants
+    // the weights in the RADV heap and the direct pool cannot hold both stores
+    // and vk buffers. audio_options backend=vulkan opts back into the GPU path.
+    const char *backend_name = backend == "vulkan" ? "vulkan" : "cpu";
     const audiocpp_backend_config backend_config = {backend_name, 0, 4};
     if (audiocpp_session_create(g_model, "midi", "offline", &backend_config, g_options,
                                 &g_session) != AUDIOCPP_OK)
@@ -412,39 +417,6 @@ struct HeapStatsProbe
     unsigned arenas;
 };
 extern "C" void ps5_heap_stats(HeapStatsProbe *) noexcept;
-
-// abort() on the payload never reaches a SIGABRT handler (the death after the
-// GGML assert recurses through stderr flush/allocations and dies harder). A
-// detached sampler thread writing straight with write() — no malloc, no stdio,
-// no signals — survives that: its last line IS the state at the death moment.
-int g_death_log_fd = -1;
-void sampler_log(const char *line)
-{
-    if (g_death_log_fd < 0)
-        return;
-    ::write(g_death_log_fd, line, std::strlen(line));
-    ::write(g_death_log_fd, "\n", 1);
-}
-void sampler_loop()
-{
-    for (;;)
-    {
-        HeapStatsProbe stats{};
-        ps5_heap_stats(&stats);
-        char line[224];
-        const int n = std::snprintf(line, sizeof(line),
-                                    "sample heap mapped=%zu MiB seg=%u fb=%llu | pool free=%zu MiB "
-                                    "largest=%zu MiB flexible=%zu MiB",
-                                    stats.mapped_bytes >> 20, stats.segments, stats.libc_fallbacks,
-                                    prospero_memory::free_total() >> 20,
-                                    prospero_memory::largest_free_block() >> 20,
-                                    prospero_memory::flexible_free() >> 20);
-        if (n > 0)
-            sampler_log(line);
-        struct timespec nap{0, 200000000};
-        nanosleep(&nap, nullptr);
-    }
-}
 
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
                                         std::size_t response_capacity,
@@ -548,14 +520,6 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                           prospero_memory::largest_free_block() >> 20,
                           prospero_memory::flexible_free() >> 20);
             stage_log(line);
-            static bool sampler_started = false;
-            if (!sampler_started)
-            {
-                g_death_log_fd = ::open("/download0/ProsperoAI/work/audio/sheetsage-death.log",
-                                        O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
-                std::thread(sampler_loop).detach();
-                sampler_started = true;
-            }
         }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
