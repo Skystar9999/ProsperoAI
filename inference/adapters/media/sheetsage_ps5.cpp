@@ -276,7 +276,9 @@ std::string write_result_artifacts(const audiocpp_result *result, const std::str
 }
 
 bool ensure_engine(const std::string &root, const std::string &weight_type,
-                   const std::string &backend, void (*progress)(const char *))
+                   const std::string &backend,
+                   const std::vector<std::pair<std::string, std::string>> &engine_options,
+                   void (*progress)(const char *))
 {
     if (g_model && g_session && g_model_root == root)
         return true;
@@ -305,6 +307,18 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
         audiocpp_options_set(g_options, "sheetsage2.weight_type", weight_type.c_str()) !=
             AUDIOCPP_OK)
         log_error("sheetsage2.weight_type rejected");
+    // PS5's libc heap (flexible memory) is a few hundred MiB; audio.cpp's default
+    // graph arena (1536 MiB, x8 for the encoder context) only fits on a PC. Shrink
+    // it to 32 MiB (256 MiB encoder context) unless the caller overrides it.
+    audiocpp_options_set(g_options, "sheetsage2.decoder_graph_arena_mb", "32");
+    for (const auto &option : engine_options)
+        if (audiocpp_options_set(g_options, option.first.c_str(), option.second.c_str()) !=
+            AUDIOCPP_OK)
+        {
+            char note[160];
+            std::snprintf(note, sizeof(note), "engine option rejected: %s", option.first.c_str());
+            stage_log(note);
+        }
     if (progress)
         progress("Loading SheetSage2 on Vulkan");
     // audio_options backend=cpu isolates ggml-Vulkan faults from audio.cpp logic;
@@ -332,6 +346,7 @@ struct CoverSettings
     std::string weight_type;
     std::string backend;
     std::string max_tokens;
+    std::vector<std::pair<std::string, std::string>> engine_options;
 };
 
 CoverSettings parse_cover_options(const std::string &blob)
@@ -359,6 +374,8 @@ CoverSettings parse_cover_options(const std::string &blob)
             out.backend = value;
         else if (key == "max_tokens")
             out.max_tokens = value;
+        else if (key.compare(0, 10, "sheetsage2.") == 0)
+            out.engine_options.emplace_back(key, value); // forwarded verbatim to audio.cpp
     }
     return out;
 }
@@ -425,7 +442,8 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                           sample_rate);
             stage_log(line);
         }
-        if (!ensure_engine(model_root, cover.weight_type, cover.backend, progress))
+        if (!ensure_engine(model_root, cover.weight_type, cover.backend, cover.engine_options,
+                           progress))
         {
             stage_error("engine load failed");
             std::snprintf(response, response_capacity, "Could not load SheetSage2 engine: %s",
