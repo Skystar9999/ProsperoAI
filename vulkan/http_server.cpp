@@ -1633,7 +1633,7 @@ void handle_media_file(const NetApi &api, int sock, const char *path, const char
         if (dash != nullptr)
         {
             const bool have_start = dash != v;
-            const bool have_end = dash[1] != '\0' && dash[1] != ' ';
+            const bool have_end = dash[1] >= '0' && dash[1] <= '9';
             long s = 0, e = 0;
             if (have_start)
                 s = std::strtol(v, nullptr, 10);
