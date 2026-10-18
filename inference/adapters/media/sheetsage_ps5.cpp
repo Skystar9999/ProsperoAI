@@ -9,12 +9,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <signal.h>
+#include <fcntl.h>
 #include <string>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 extern "C"
@@ -412,21 +413,37 @@ struct HeapStatsProbe
 };
 extern "C" void ps5_heap_stats(HeapStatsProbe *) noexcept;
 
-char g_death_stack[SIGSTKSZ * 4];
-void death_probe(int) noexcept
+// abort() on the payload never reaches a SIGABRT handler (the death after the
+// GGML assert recurses through stderr flush/allocations and dies harder). A
+// detached sampler thread writing straight with write() — no malloc, no stdio,
+// no signals — survives that: its last line IS the state at the death moment.
+int g_death_log_fd = -1;
+void sampler_log(const char *line)
 {
-    HeapStatsProbe dead{};
-    ps5_heap_stats(&dead);
-    char line[256];
-    std::snprintf(line, sizeof(line),
-                  "at-death heap: mapped=%zu MiB peak=%zu MiB seg=%u fb=%llu | pool free=%zu MiB "
-                  "largest=%zu MiB flexible=%zu MiB",
-                  dead.mapped_bytes >> 20, dead.peak_bytes >> 20, dead.segments,
-                  dead.libc_fallbacks, prospero_memory::free_total() >> 20,
-                  prospero_memory::largest_free_block() >> 20, prospero_memory::flexible_free() >> 20);
-    stage_log(line);
-    std::signal(SIGABRT, SIG_DFL);
-    std::raise(SIGABRT);
+    if (g_death_log_fd < 0)
+        return;
+    ::write(g_death_log_fd, line, std::strlen(line));
+    ::write(g_death_log_fd, "\n", 1);
+}
+void sampler_loop()
+{
+    for (;;)
+    {
+        HeapStatsProbe stats{};
+        ps5_heap_stats(&stats);
+        char line[224];
+        const int n = std::snprintf(line, sizeof(line),
+                                    "sample heap mapped=%zu MiB seg=%u fb=%llu | pool free=%zu MiB "
+                                    "largest=%zu MiB flexible=%zu MiB",
+                                    stats.mapped_bytes >> 20, stats.segments, stats.libc_fallbacks,
+                                    prospero_memory::free_total() >> 20,
+                                    prospero_memory::largest_free_block() >> 20,
+                                    prospero_memory::flexible_free() >> 20);
+        if (n > 0)
+            sampler_log(line);
+        struct timespec nap{0, 200000000};
+        nanosleep(&nap, nullptr);
+    }
 }
 
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
@@ -531,20 +548,13 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                           prospero_memory::largest_free_block() >> 20,
                           prospero_memory::flexible_free() >> 20);
             stage_log(line);
-            static bool handler_set = false;
-            if (!handler_set)
+            static bool sampler_started = false;
+            if (!sampler_started)
             {
-                stack_t alt{};
-                alt.ss_sp = g_death_stack;
-                alt.ss_size = sizeof(g_death_stack);
-                alt.ss_flags = 0;
-                sigaltstack(&alt, nullptr);
-                struct sigaction sa{};
-                sa.sa_handler = death_probe;
-                sa.sa_flags = SA_ONSTACK;
-                sigemptyset(&sa.sa_mask);
-                sigaction(SIGABRT, &sa, nullptr);
-                handler_set = true;
+                g_death_log_fd = ::open("/download0/ProsperoAI/work/audio/sheetsage-death.log",
+                                        O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+                std::thread(sampler_loop).detach();
+                sampler_started = true;
             }
         }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
