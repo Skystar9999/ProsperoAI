@@ -590,7 +590,13 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
                            {"prompt_eval_duration",
                             static_cast<unsigned long long>(stats.prefill_microseconds) * 1000}};
     if (!ok)
-        body["error"] = "generation failed";
+    {
+        // Adapters write a human-readable failure stage into the response
+        // buffer before returning non-zero; surface it instead of the bare
+        // "generation failed" so remote debugging does not need a rebuild.
+        const char *detail = response_text.data();
+        body["error"] = detail && *detail ? detail : "generation failed";
+    }
     // Model output may end halfway through a multibyte UTF-8 character when
     // num_predict is reached. Replace malformed bytes instead of letting JSON
     // serialization throw out of the HTTP worker and abort the whole title.
@@ -644,7 +650,13 @@ void handle_chat(const NetApi &api, int sock, const char *request_body)
         {"done", true},
         {"done_reason", stats.output_limit_reached ? "length" : "stop"}};
     if (!ok)
-        body["error"] = "generation failed";
+    {
+        // Adapters write a human-readable failure stage into the response
+        // buffer before returning non-zero; surface it instead of the bare
+        // "generation failed" so remote debugging does not need a rebuild.
+        const char *detail = response_text.data();
+        body["error"] = detail && *detail ? detail : "generation failed";
+    }
     const auto serialized = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     send_json(api, sock, serialized.c_str());
 }

@@ -71,6 +71,26 @@ void log_memory(const char *stage)
     sceKernelDebugOutText(0, line);
 }
 
+// Persistent stage trail beside the uploads: sceKernelDebugOutText is not
+// remotely readable on retail, so Cover failures must be diagnosable from
+// the filesystem alone (read via the Pegasus file API).
+void stage_log(const char *what)
+{
+    std::FILE *file = std::fopen("/download0/ProsperoAI/work/audio/sheetsage-stage.log", "a");
+    if (!file)
+        return;
+    std::fprintf(file, "%s\n", what);
+    std::fclose(file);
+}
+
+void stage_error(const char *stage)
+{
+    char line[512];
+    std::snprintf(line, sizeof(line), "%s: %.400s", stage, audiocpp_last_error());
+    stage_log(line);
+    log_error(stage);
+}
+
 // Reads a little-endian PCM16 (mono or stereo, downmixed) WAV into float
 // [-1, 1]. The browser side of Cover always uploads 16 kHz mono PCM16 from
 // Web Audio; float-format WAVs are accepted too because they cost nothing.
@@ -266,10 +286,12 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
         audiocpp_model_load(g_registry, root.c_str(), &model_config, nullptr, &g_model) !=
             AUDIOCPP_OK)
     {
+        stage_error("model_load");
         log_error("model load failed");
         release_engine();
         return false;
     }
+    stage_log("model_load ok");
     g_options = audiocpp_options_create();
     if (!g_options)
     {
@@ -289,6 +311,7 @@ bool ensure_engine(const std::string &root, const std::string &weight_type,
     if (audiocpp_session_create(g_model, "midi", "offline", &backend_config, g_options,
                                 &g_session) != AUDIOCPP_OK)
     {
+        stage_error("session_create");
         log_error("Vulkan session creation failed");
         release_engine();
         return false;
@@ -350,9 +373,16 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         return 1;
     const auto settings = prospero_settings::get();
     const CoverSettings cover = parse_cover_options(settings.audio_options);
+    {
+        char line[640];
+        std::snprintf(line, sizeof(line), "enter root=%.128s input=%.256s wt=%.16s", root,
+                      cover.input_audio.c_str(), cover.weight_type.c_str());
+        stage_log(line);
+    }
     if (cover.input_audio.empty() || cover.input_audio.find("..") != std::string::npos ||
         cover.input_audio.rfind("/download0/ProsperoAI/work/audio/", 0) != 0)
     {
+        stage_log("guard rejected input_audio");
         std::snprintf(response, response_capacity,
                       "Cover needs audio_options 'input_audio=/download0/ProsperoAI/work/"
                       "audio/<file>.wav'");
@@ -375,19 +405,28 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         int sample_rate = 0;
         if (!read_pcm_wav(cover.input_audio, samples, sample_rate))
         {
+            stage_log("wav read failed");
             std::snprintf(response, response_capacity,
                           "Cover input unreadable (need 16-bit PCM WAV): %s",
                           cover.input_audio.c_str());
             result_code = 2;
             break;
         }
+        {
+            char line[128];
+            std::snprintf(line, sizeof(line), "wav ok: %zu samples @ %d Hz", samples.size(),
+                          sample_rate);
+            stage_log(line);
+        }
         if (!ensure_engine(model_root, cover.weight_type, progress))
         {
+            stage_error("engine load failed");
             std::snprintf(response, response_capacity, "Could not load SheetSage2 engine: %s",
                           audiocpp_last_error());
             result_code = 0;
             break;
         }
+        stage_log("engine + session ok");
         request = audiocpp_request_create();
         if (!request ||
             audiocpp_request_set_audio(request, samples.data(), samples.size(), sample_rate,
@@ -396,6 +435,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
              audiocpp_request_set_option(request, "max_tokens", cover.max_tokens.c_str()) !=
                  AUDIOCPP_OK))
         {
+            stage_error("request setup failed");
             log_error("request setup failed");
             result_code = 3;
             break;
@@ -407,6 +447,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
             progress(stage);
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
+            stage_error("session_run");
             log_error("Vulkan transcription failed");
             std::snprintf(response, response_capacity, "SheetSage2 transcription failed: %s",
                           audiocpp_last_error());
@@ -416,6 +457,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         const std::string artifacts = write_result_artifacts(result, output);
         if (artifacts.empty())
         {
+            stage_log("run ok but zero artifacts");
             std::snprintf(response, response_capacity,
                           "SheetSage2 returned no score artifact (audio too short or silent?)");
             result_code = 4;
