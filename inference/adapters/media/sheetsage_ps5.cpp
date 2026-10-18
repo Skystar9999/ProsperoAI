@@ -9,9 +9,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <signal.h>
 #include <string>
 #include <vector>
 
@@ -390,9 +392,13 @@ extern "C" void ps5_sheetsage_release()
 
 // The SheetSage weight stores are 1-3 GiB host buffers; the trace shows them
 // landing in libc's 284 MiB flexible heap even though the direct pool reports
-// 11 GiB free. One probe line settles where the title heap actually is: its
-// reserved range, what it has mapped, how many allocations libc had to catch,
-// and whether a fresh 1 GiB block from it succeeds right now.
+// 11 GiB free. The build-35 probes proved the exact posix_memalign(64, 1 GiB)
+// succeeds microseconds before session_run and fails inside it, and that
+// free() of probe blocks never returns segments to the kernel (the tiling
+// refusal in heap_unmap_locked) — so allocation probes poison the very pool
+// they measure. This build measures without touching: a SIGABRT handler fires
+// at the GGML_ASSERT to record heap state, total pool free, largest contiguous
+// block, and flexible memory at the death moment.
 struct HeapStatsProbe
 {
     void *range_base;
@@ -405,9 +411,23 @@ struct HeapStatsProbe
     unsigned arenas;
 };
 extern "C" void ps5_heap_stats(HeapStatsProbe *) noexcept;
-extern "C" void *ps5_heap_malloc(std::size_t) noexcept;
-extern "C" void *ps5_heap_memalign(std::size_t, std::size_t) noexcept;
-extern "C" void ps5_heap_free(void *) noexcept;
+
+char g_death_stack[SIGSTKSZ * 4];
+void death_probe(int) noexcept
+{
+    HeapStatsProbe dead{};
+    ps5_heap_stats(&dead);
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "at-death heap: mapped=%zu MiB peak=%zu MiB seg=%u fb=%llu | pool free=%zu MiB "
+                  "largest=%zu MiB flexible=%zu MiB",
+                  dead.mapped_bytes >> 20, dead.peak_bytes >> 20, dead.segments,
+                  dead.libc_fallbacks, prospero_memory::free_total() >> 20,
+                  prospero_memory::largest_free_block() >> 20, prospero_memory::flexible_free() >> 20);
+    stage_log(line);
+    std::signal(SIGABRT, SIG_DFL);
+    std::raise(SIGABRT);
+}
 
 extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, char *response,
                                         std::size_t response_capacity,
@@ -502,38 +522,30 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         {
             HeapStatsProbe stats{};
             ps5_heap_stats(&stats);
-            void *probe = ps5_heap_malloc(1ULL << 30);
-            // Same call ggml_aligned_malloc makes, byte for byte: if the
-            // wrapper serves this but the run still dies, the run's failure
-            // is a state change between here and there, not the routing.
-            void *pma = nullptr;
-            const int pma_rc = posix_memalign(&pma, 64, 1ULL << 30);
-            void *hma = ps5_heap_memalign(64, 1ULL << 30);
             char line[256];
             std::snprintf(line, sizeof(line),
-                          "title heap: base=%p range=%zu MiB mapped=%zu MiB seg=%u fb=%llu "
-                          "arenas=%u | 1GiB probe=%s | pma rc=%d ptr=%p | hma=%p", stats.range_base,
-                          stats.range_bytes >> 20, stats.mapped_bytes >> 20, stats.segments,
-                          stats.libc_fallbacks, stats.arenas, probe ? "OK" : "FAIL", pma_rc, pma,
-                          hma);
+                          "pre-run heap: mapped=%zu MiB peak=%zu MiB seg=%u fb=%llu arenas=%u | "
+                          "pool free=%zu MiB largest=%zu MiB flexible=%zu MiB",
+                          stats.mapped_bytes >> 20, stats.peak_bytes >> 20, stats.segments,
+                          stats.libc_fallbacks, stats.arenas, prospero_memory::free_total() >> 20,
+                          prospero_memory::largest_free_block() >> 20,
+                          prospero_memory::flexible_free() >> 20);
             stage_log(line);
-            if (probe)
-                ps5_heap_free(probe);
-            if (pma_rc == 0)
-                std::free(pma);
-            if (hma)
-                ps5_heap_free(hma);
-            // abort() runs atexit: capture the heap at the death moment.
-            std::atexit([] {
-                HeapStatsProbe dead{};
-                ps5_heap_stats(&dead);
-                char dead_line[192];
-                std::snprintf(dead_line, sizeof(dead_line),
-                              "at-death heap: mapped=%zu MiB seg=%u fb=%llu arenas=%u",
-                              dead.mapped_bytes >> 20, dead.segments, dead.libc_fallbacks,
-                              dead.arenas);
-                stage_log(dead_line);
-            });
+            static bool handler_set = false;
+            if (!handler_set)
+            {
+                stack_t alt{};
+                alt.ss_sp = g_death_stack;
+                alt.ss_size = sizeof(g_death_stack);
+                alt.ss_flags = 0;
+                sigaltstack(&alt, nullptr);
+                struct sigaction sa{};
+                sa.sa_handler = death_probe;
+                sa.sa_flags = SA_ONSTACK;
+                sigemptyset(&sa.sa_mask);
+                sigaction(SIGABRT, &sa, nullptr);
+                handler_set = true;
+            }
         }
         if (audiocpp_session_run(g_session, request, &result) != AUDIOCPP_OK)
         {
