@@ -491,7 +491,7 @@ extern "C" int ps5_stems_separate(const char *root, const char *prompt, char *re
         stage_log("engine + session ok");
         request = audiocpp_request_create();
         if (!request ||
-            audiocpp_request_set_audio(request, samples.data(), samples.size(), sample_rate,
+            audiocpp_request_set_audio(request, samples.data(), samples.size() / 2u, sample_rate,
                                        2) != AUDIOCPP_OK)
         {
             stage_error("request setup failed");
