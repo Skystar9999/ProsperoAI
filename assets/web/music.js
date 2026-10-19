@@ -204,6 +204,49 @@
     setStatus('Cover settings loaded from ' + filename + ' — press GENERATE', 'ok');
   }
 
+  // ---- Cover + ABC: one-click subtle-variation recipe from a library track.
+  // Loads lyrics/style/seed/duration from the track's saved settings AND
+  // transcribes the track to ABC on the console (SheetSage2), arming ABC
+  // conditioning for the next generation. Restart the app before GENERATE:
+  // SheetSage2 -> YuE2 in one session fragments the GPU heap (validated).
+  function coverAndAbc(meta, filename) {
+    if (meta && Object.keys(meta).length) applyCover(meta, filename);
+    var base = String(filename || '').replace(/\.(wav|mp3)$/i, '').replace(/_seed\d+$/i, '');
+    if (!meta || !Object.keys(meta).length)
+      $('track-name').value = base + ' var';
+    setStatus('Cover+ABC: transcribing ' + filename + ' with SheetSage2 (1-3 min, you can close the page)...', 'busy');
+    var t0 = Date.now();
+    api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
+      .then(function () {
+        return api('/api/generate', { model: 'sheetsage2-orig', prompt: 'transcribe ' + filename }, 1800000);
+      })
+      .then(function (j) {
+        var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
+        var m = resp.match(/\/download0\/\S+?\.abc/);
+        if (!m) throw new Error('no ABC artifact in response: ' + resp.slice(0, 220));
+        var path = m[0].replace(/["',).]+$/, '');
+        var fname = path.substring(path.lastIndexOf('/') + 1);
+        return fetch(AUDIO_DIR + encodeURIComponent(fname)).then(function (r) {
+          if (!r.ok) throw new Error('fetch score HTTP ' + r.status);
+          return r.text();
+        }).then(function (t) {
+          $('abc').value = t;
+          var abcName = base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60) + '-var.abc';
+          $('abc-name').value = abcName;
+          knownFiles[abcName] = true;
+          if ($('cot') && !$('cot').value) $('cot').value = 'melody';
+          loadAbcSelect();
+          try { formSaveNow(); } catch (e) {}
+          setStatus('Cover+ABC done in ' + Math.round((Date.now() - t0) / 1000) +
+            's — score armed for conditioning. RESTART the PS5 app before GENERATE, then tweak lyrics/style and go.', 'ok');
+          $('abc').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      })
+      .catch(function (e) {
+        setStatus('Cover+ABC failed: ' + (e && e.message ? e.message : e), 'err');
+      });
+  }
+
   // ---- Master: explicit-only mastering (peak normalize + limiter), browser-side ----
   function encodeWav16(buffer) {
     var ch = buffer.numberOfChannels, sr = buffer.sampleRate, len = buffer.length;
@@ -280,12 +323,23 @@
       coverBtn.textContent = '🎤 Cover (no saved settings — old track)';
       coverBtn.disabled = true; coverBtn.className = 'pl-menu-dim';
     }
+    var abcCoverBtn = document.createElement('button'); abcCoverBtn.type = 'button';
+    if (isMp3Source) {
+      abcCoverBtn.textContent = '🎛 Cover + ABC (WAV only)';
+      abcCoverBtn.disabled = true; abcCoverBtn.className = 'pl-menu-dim';
+    } else {
+      abcCoverBtn.textContent = '🎛 Cover + ABC (settings + score, subtle remix)';
+      abcCoverBtn.addEventListener('click', function (e) {
+        e.stopPropagation(); menu.style.display = 'none';
+        coverAndAbc(meta, filename);
+      });
+    }
     var masterBtn = document.createElement('button'); masterBtn.type = 'button';
     masterBtn.textContent = '🎚 Master (normalize + limiter)';
     var ps5StemsBtn = document.createElement('button'); ps5StemsBtn.type = 'button';
     ps5StemsBtn.textContent = '✂ Stems — PS5 GPU (htdemucs, ~25 s)';
     if (isMp3Source) ps5StemsBtn.style.display = 'none';
-    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn); menu.appendChild(ps5StemsBtn);
+    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(abcCoverBtn); menu.appendChild(masterBtn); menu.appendChild(ps5StemsBtn);
     row.appendChild(play); row.appendChild(tm); row.appendChild(vol); row.appendChild(menuBtn); row.appendChild(menu);
     vol.addEventListener('input', function () {
       try { localStorage.setItem('prospero-vol', vol.value); } catch (e) {}
