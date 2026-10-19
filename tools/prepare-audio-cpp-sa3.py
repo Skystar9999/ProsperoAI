@@ -144,6 +144,18 @@ def include_yue2_dependencies(path: Path) -> None:
     path.write_text(source)
 
 
+def include_demucs_dependencies(path: Path) -> None:
+    """Restore the fast projection modules HTDemucs builds its separators from."""
+    source = path.read_text()
+    line = "    src/framework/modules/optimizations/fast_projection_modules.cpp\n"
+    if line in source:
+        return
+    anchor = "    src/framework/modules/optimizations/fast_kv_modules.cpp\n"
+    if source.count(anchor) != 1:
+        raise SystemExit(f"{path}: cannot restore demucs dependency {line.strip()}")
+    path.write_text(source.replace(anchor, anchor + line, 1))
+
+
 def reuse_parent_ggml(path: Path) -> None:
     """Reuse the parent runtime's upstream GGML target when added as a subproject."""
     replace_once(
@@ -435,6 +447,7 @@ def main() -> None:
     include_sa3_dependencies(cmake)
     include_ace_step_dependencies(cmake)
     include_yue2_dependencies(cmake)
+    include_demucs_dependencies(cmake)
     reuse_parent_ggml(cmake)
     if not ggml_has_api(ggml_source, "ggml_round_bf16"):
         adapt_ace_step_ggml_round(source)
