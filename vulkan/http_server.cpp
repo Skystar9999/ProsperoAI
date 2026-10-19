@@ -2108,7 +2108,7 @@ void handle_music_stems_zip(const NetApi &api, int sock, const char *track)
         stems_zip::put32(rec + 18, static_cast<std::uint32_t>(e.size));
         stems_zip::put32(rec + 22, static_cast<std::uint32_t>(e.size));
         stems_zip::put16(rec + 26, static_cast<std::uint16_t>(e.member.size()));
-        send_all(api, sock, rec, sizeof(rec));
+        send_all(api, sock, reinterpret_cast<const char *>(rec), sizeof(rec));
         send_all(api, sock, e.member.data(), e.member.size());
         FILE *f = std::fopen(e.path.c_str(), "rb");
         if (!f)
@@ -2130,7 +2130,7 @@ void handle_music_stems_zip(const NetApi &api, int sock, const char *track)
         stems_zip::put32(crec + 24, static_cast<std::uint32_t>(e.size));
         stems_zip::put16(crec + 28, static_cast<std::uint16_t>(e.member.size()));
         stems_zip::put32(crec + 42, static_cast<std::uint32_t>(e.offset));
-        send_all(api, sock, crec, sizeof(crec));
+        send_all(api, sock, reinterpret_cast<const char *>(crec), sizeof(crec));
         send_all(api, sock, e.member.data(), e.member.size());
         cd_size += 46 + static_cast<long>(e.member.size());
     }
@@ -2141,7 +2141,7 @@ void handle_music_stems_zip(const NetApi &api, int sock, const char *track)
     stems_zip::put16(eocd + 10, static_cast<std::uint16_t>(entries.size()));
     stems_zip::put32(eocd + 12, static_cast<std::uint32_t>(cd_size));
     stems_zip::put32(eocd + 16, static_cast<std::uint32_t>(total - cd_size - 22));
-    send_all(api, sock, eocd, sizeof(eocd));
+    send_all(api, sock, reinterpret_cast<const char *>(eocd), sizeof(eocd));
 }
 
 // Music Studio: list generated audio + ABC files under work/audio, newest first.
