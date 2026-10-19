@@ -63,6 +63,15 @@ Write your lyrics here..."></textarea>
       <button id="generate" type="button">▶ GENERATE</button>
       <button id="regen" type="button" title="keep everything and generate again with seed +1">🎲+1</button>
     </div>
+    <div id="queue-row">
+      <label for="q-count">×<input id="q-count" type="number" value="3" min="1" max="20" style="width:3.2em"></label>
+      <button id="q-add" type="button" title="queue this setup with N consecutive seeds">+ Queue</button>
+      <button id="q-run" type="button">▶▶ Run queue</button>
+      <button id="q-clear" type="button">✕</button>
+      <label id="q-restart-lb" title="kill + remount + relaunch the title before every track after the first (needed after Cover/SheetSage2 runs)">
+        <input id="q-restart" type="checkbox"> restart/title per track</label>
+    </div>
+    <div id="queue-log"></div>
     <div id="gen-status"></div>
     <div id="result"></div>
   </section>

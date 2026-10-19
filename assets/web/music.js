@@ -513,30 +513,31 @@
   var knownFiles = {};
   function trackFiles(j) { (j.files || []).forEach(function (f) { knownFiles[f.name] = true; }); }
 
-  function runGeneration() {
-    var btn = $('generate');
-    if (btn.disabled) return;
-    btn.disabled = true;
+  // single-run and queue-run share this; ov = { seed, status(msg,cls) }
+  function generateOnce(ov) {
+    ov = ov || {};
+    var say = ov.status || setStatus;
+    var seed = (ov.seed != null) ? ov.seed : (parseInt($('seed').value, 10) || 42);
     var t0 = Date.now();
     var timer = setInterval(function () {
-      setStatus('Running... ' + Math.round((Date.now() - t0) / 1000) +
+      say('Running... ' + Math.round((Date.now() - t0) / 1000) +
         's (model load + generation can take 4-6 min)', 'busy');
     }, 1000);
     var abcName = $('abc-name').value.trim();
     if (abcName && !/\.abc$/i.test(abcName)) abcName += '.abc';
     var abcContent = $('abc').value.trim();
     var doGenerate = function (effectiveName) {
-      setStatus('Sending settings...', 'busy');
+      say('Sending settings...', 'busy');
       var body = {
         audio_lyrics: $('lyrics').value,
         audio_duration_sec: parseInt($('duration').value, 10) || 240,
-        audio_seed: parseInt($('seed').value, 10) || 42,
+        audio_seed: seed,
         // always sent: empty = CLEAR inherited options (otherwise an abc_file
         // from an earlier session stays in runtime settings and the engine sees it)
         audio_options: buildOptions(effectiveName)
       };
       return api('/api/settings/runtime', body).then(function () {
-        setStatus('Generating...', 'busy');
+        say('Generating...', 'busy');
         return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
       });
     };
@@ -544,15 +545,15 @@
     // only names that already exist on the PS5; otherwise no abc_file at all.
     var pre = Promise.resolve('');
     if (abcName && abcContent) {
-      setStatus('Auto-saving ABC...', 'busy');
+      say('Auto-saving ABC...', 'busy');
       pre = api('/api/music/abc', { name: abcName, content: $('abc').value })
         .then(function () { knownFiles[abcName] = true; return abcName; });
     } else if (abcName && knownFiles[abcName]) {
       pre = Promise.resolve(abcName);
     } else if (abcName) {
-      setStatus('ABC "' + abcName + '" missing on PS5 and the editor is empty — generating without a score', 'busy');
+      say('ABC "' + abcName + '" missing on PS5 and the editor is empty — generating without a score', 'busy');
     }
-    pre.then(doGenerate).then(function (j) {
+    return pre.then(doGenerate).then(function (j) {
       clearInterval(timer);
       var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 300));
       var m = resp.match(/\/download0\/\S+?\.(?:wav|mp3)/);
@@ -568,7 +569,7 @@
           var meta = {
             lyrics: $('lyrics').value,
             style: $('style').value,
-            seed: parseInt($('seed').value, 10) || 42,
+            seed: seed,
             duration: parseInt($('duration').value, 10) || 240,
             model: String($('model').value || ''),
             cot: $('cot').value,
@@ -580,9 +581,10 @@
           res.appendChild(makePlayer(finalUrl, fname, /\.mp3$/i.test(finalUrl), meta));
           var p = document.createElement('div'); p.className = 'path'; p.textContent = finalUrl;
           res.appendChild(p);
-          setStatus('Done in ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
+          say('Done in ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
           api('/api/music/meta', { name: fname, meta: meta })
             .then(loadLibrary).catch(loadLibrary);
+          return { url: finalUrl, fname: fname };
         };
         var nice = $('track-name').value.trim();
         if (nice) {
@@ -592,27 +594,36 @@
             return { 'ă': 'a', 'â': 'a', 'î': 'i', 'ș': 's', 'ş': 's', 'ț': 't', 'ţ': 't' }[c];
           }).replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
           if (!safe) safe = 'piesa';
-          var dst = safe + '_seed' + ($('seed').value || '42') + ext;
-          api('/api/music/rename', { src: src, dst: dst }).then(function () {
-            finish(url.replace(src, dst));
+          var dst = safe + '_seed' + seed + ext;
+          return api('/api/music/rename', { src: src, dst: dst }).then(function () {
+            return finish(url.replace(src, dst));
           }).catch(function () {
-            finish(url);
             setStatus('Track is ready, but "' + dst + '" already exists — kept the original name', 'err');
+            return finish(url);
           });
         } else {
-          finish(url);
+          return finish(url);
         }
       } else {
         var res2 = $('result');
         res2.innerHTML = '';
         var p2 = document.createElement('div'); p2.className = 'path'; p2.textContent = resp;
         res2.appendChild(p2);
-        setStatus('Response without audio file', 'err');
+        say('Response without audio file', 'err');
+        return { url: '', fname: '' };
       }
     }).catch(function (e) {
       clearInterval(timer);
-      setStatus('Failed: ' + e.message, 'err');
-    }).then(function () { btn.disabled = false; });
+      say('Failed: ' + e.message, 'err');
+      throw e;
+    });
+  }
+
+  function runGeneration() {
+    var btn = $('generate');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    generateOnce().catch(function () {}).then(function () { btn.disabled = false; });
   }
   $('generate').addEventListener('click', runGeneration);
 
@@ -765,6 +776,140 @@
       clearTimeout(formSaveT); formSaveT = setTimeout(formSaveNow, 300);
     });
   });
+
+  // ---- multi-seed queue (browser-orchestrated; survives reload via localStorage) ----
+  var QKEY = 'prospero-music-queue-v1';
+  var TITLE_ID = 'PPSA99004';
+  var queue = [], queueRunning = false;
+  function qload() {
+    try { queue = JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch (e) { queue = []; }
+    if (!Array.isArray(queue)) queue = [];
+    // a reload mid-run kills the in-flight generation — resume from that item
+    queue.forEach(function (it) { if (it.status === 'running') { it.status = 'pending'; it.note = 'interrupted by reload'; } });
+  }
+  function qsave() { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (e) {} }
+  function qparams() {
+    return {
+      lyrics: $('lyrics').value, style: $('style').value,
+      duration: $('duration').value, cot: $('cot').value,
+      abc: $('abc').value, abc_name: $('abc-name').value,
+      track_name: $('track-name').value, model: $('model').value
+    };
+  }
+  function qapply(p) {
+    $('lyrics').value = p.lyrics; $('style').value = p.style;
+    $('duration').value = p.duration; $('dur-val').textContent = p.duration;
+    $('cot').value = p.cot; $('abc').value = p.abc;
+    $('abc-name').value = p.abc_name; $('track-name').value = p.track_name;
+    if (p.model && $('model').value !== p.model) {
+      for (var i = 0; i < $('model').options.length; i++)
+        if ($('model').options[i].value === p.model) { $('model').value = p.model; break; }
+    }
+  }
+  var QICON = { pending: '·', running: '▶', done: '✅', failed: '✕' };
+  function renderQueue() {
+    var el = $('queue-log');
+    if (!queue.length) { el.textContent = ''; return; }
+    var done = 0, fail = 0;
+    var lines = queue.map(function (it, i) {
+      if (it.status === 'done') done++;
+      if (it.status === 'failed') fail++;
+      return (QICON[it.status] || '?') + ' ' + (i + 1) + '. seed ' + it.seed +
+        (it.note ? ' — ' + it.note : '');
+    });
+    el.textContent = 'Queue ' + done + '✓ ' + fail + '✕ / ' + queue.length +
+      (queueRunning ? ' · RUNNING' : '') + '\n' + lines.join('\n');
+  }
+  function qdelay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function waitUp(limitMs) {
+    var t0 = Date.now();
+    return new Promise(function (res, rej) {
+      (function tryUp() {
+        fetch('/api/models/presets').then(function (r) { if (r.ok) res(); else throw new Error('down'); })
+          .catch(function () {
+            if (Date.now() - t0 > limitMs) return rej(new Error('title did not come back in ' + Math.round(limitMs / 60000) + ' min'));
+            setTimeout(tryUp, 4000);
+          });
+      })();
+    });
+  }
+  // full title cycle from the browser: self-exit (same-origin), mount (:10101)
+  // and launch (:8080) both send Access-Control-Allow-Origin: *
+  function restartTitle() {
+    var host = location.hostname;
+    setStatus('Restarting title: self-exit…', 'busy');
+    return api('/api/system/restart', {}, 8000).catch(function () { /* bye */ })
+      .then(function () { return qdelay(4000); })
+      .then(function () {
+        setStatus('Restarting title: remounting…', 'busy');
+        return fetch('http://' + host + ':10101/api/v1/games/mount', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title_id: TITLE_ID })
+        }).catch(function () { /* busy/already-mounted is fine */ });
+      })
+      .then(function () { return qdelay(1500); })
+      .then(function () {
+        setStatus('Restarting title: launching…', 'busy');
+        return fetch('http://' + host + ':8080/launch?titleId=' + TITLE_ID)
+          .catch(function () { /* 503 can still launch */ });
+      })
+      .then(function () {
+        setStatus('Waiting for the console server to come back (≈15-60s)…', 'busy');
+        return waitUp(300000);
+      })
+      .then(function () { loadModels(); });
+  }
+  function runQueue() {
+    if (queueRunning) return;
+    var pend = queue.filter(function (it) { return it.status === 'pending'; });
+    if (!pend.length) { setStatus('Queue is empty — add variants with "+ Queue" first', 'err'); return; }
+    if (queue.some(function (it) { return it.status === 'running'; })) return;
+    queueRunning = true;
+    $('q-run').disabled = true;
+    var idx = 0, total = pend.length;
+    var chain = Promise.resolve();
+    pend.forEach(function (item) {
+      chain = chain.then(function () {
+        if (!queueRunning) throw new Error('queue stopped');
+        idx++;
+        var label = 'Queue ' + idx + '/' + total + ' · seed ' + item.seed;
+        // first item runs on the current session; later ones get a clean
+        // title (RADV fragmentation guard), the checkbox decides
+        var needRestart = $('q-restart').checked && idx > 1;
+        var step = needRestart ? restartTitle() : Promise.resolve();
+        return step.then(function () {
+          item.status = 'running'; item.note = ''; qsave(); renderQueue();
+          qapply(item.params);
+          return generateOnce({
+            seed: item.seed,
+            status: function (m, c) { setStatus(label + ' · ' + (m || ''), c); }
+          }).then(function (r) { item.status = 'done'; item.note = r.fname || 'ok'; },
+                  function (e) { item.status = 'failed'; item.note = String(e && e.message || e).slice(0, 140); });
+        });
+      });
+    });
+    chain.catch(function (e) { setStatus('Queue stopped: ' + e.message, 'err'); })
+      .then(function () {
+        queueRunning = false; $('q-run').disabled = false;
+        qsave(); renderQueue();
+        var ok = queue.filter(function (i) { return i.status === 'done'; }).length;
+        setStatus('Queue finished: ' + ok + '/' + queue.length + ' tracks in library 🎵', 'ok');
+      });
+  }
+  $('q-add').addEventListener('click', function () {
+    var n = Math.max(1, Math.min(20, parseInt($('q-count').value, 10) || 3));
+    var start = parseInt($('seed').value, 10) || 42;
+    for (var i = 0; i < n; i++)
+      queue.push({ id: Date.now() + ':' + i, seed: Math.min(4294967295, start + i), params: qparams(), status: 'pending' });
+    formSaveNow(); qsave(); renderQueue();
+    setStatus('Queued ' + n + ' variants (seeds ' + start + '–' + (start + n - 1) + ') — press ▶▶ Run queue', 'ok');
+  });
+  $('q-run').addEventListener('click', runQueue);
+  $('q-clear').addEventListener('click', function () {
+    if (queueRunning) { queueRunning = false; setStatus('Stopping queue after the current track…', 'busy'); return; }
+    queue = []; qsave(); renderQueue();
+  });
+  qload(); renderQueue();
 
   loadModels(); loadLibrary(); loadAbcSelect();
   // Restore AFTER server settings land so the user's last (possibly unsaved)

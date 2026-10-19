@@ -2360,6 +2360,16 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_rename(api, sock, body);
     else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)
         handle_music_delete(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/system/restart") == 0) {
+        // queue orchestrator lives in the browser: it can mount (:10101) and
+        // launch (:8080) cross-origin (both send ACAO:*), but killing us must
+        // come from us — pldmgr demands a custom header CORS would preflight.
+        // Respond first, give the socket time to drain, then hard-exit; the
+        // browser polls for the outage and brings the title back.
+        send_status(api, sock, "200 OK", "application/json", "{\"ok\":true,\"bye\":true}");
+        ::usleep(1200000);
+        ::_exit(0);
+    }
 #endif
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/") == 0)
         send_status(api, sock, "200 OK", "text/html; charset=utf-8", kChatPage);
