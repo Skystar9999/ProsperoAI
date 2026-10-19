@@ -8,6 +8,23 @@
 
   function apiKey() { return localStorage.getItem(KEY) || ''; }
 
+  // raw-body upload (needs the /api/music/uploadbin route; 404 = old build)
+  function uploadBinary(name, buf) {
+    var opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Upload-Name': name },
+      body: buf
+    };
+    var k = apiKey();
+    if (k) opts.headers['Authorization'] = 'Bearer ' + k;
+    return fetch('/api/music/uploadbin', opts).then(function (r) {
+      if (r.status === 404) { var e = new Error('uploadbin-missing'); e.missing = true; throw e; }
+      if (r.status === 401) { $('key-bar').hidden = false; throw new Error('API key required (401)'); }
+      if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 160)); });
+      return r.json();
+    });
+  }
+
   function api(path, body, timeoutMs, method) {
     var opts = { headers: {} };
     var k = apiKey();
@@ -378,16 +395,37 @@
         function (stg, p) { setStatus((stg || 'Separating stems') + (p ? ' — ' + p + '%' : '') + ' — keep this page open', 'busy'); },
         function (vocBuf, instBuf, secs) {
           var base = filename.replace(/\.(wav|mp3)$/i, '');
-          [['-vocals.wav', vocBuf], ['-instrumental.wav', instBuf]].forEach(function (pair, idx) {
-            var blob = new Blob([pair[1]], { type: 'audio/wav' });
-            var a2 = document.createElement('a');
-            a2.href = URL.createObjectURL(blob); a2.download = base + pair[0];
-            document.body.appendChild(a2);
-            setTimeout(function () { a2.click(); }, idx * 400); // Chrome multi-download gesture grace
-            setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 15000);
-          });
-          setStatus('Stems done in ' + secs + 's — downloaded ' + base + '-vocals.wav + -instrumental.wav (' +
-            Math.round((Date.now() - s0) / 1000) + 's total incl. model)', 'ok');
+          var jobs = [[base + '-vocals.wav', vocBuf], [base + '-instrumental.wav', instBuf]];
+          function downloadBoth() {
+            jobs.forEach(function (pair, idx) {
+              var blob = new Blob([pair[1]], { type: 'audio/wav' });
+              var a2 = document.createElement('a');
+              a2.href = URL.createObjectURL(blob); a2.download = pair[0];
+              document.body.appendChild(a2);
+              setTimeout(function () { a2.click(); }, idx * 400); // Chrome multi-download gesture grace
+              setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 15000);
+            });
+            setStatus('Stems done in ' + secs + 's — downloaded (this build cannot save to library)', 'ok');
+          }
+          setStatus('Stems done in ' + secs + 's — saving to library...', 'busy');
+          (function next(i) {
+            if (i >= jobs.length) {
+              setStatus('Stems saved to library: ' + jobs[0][0] + ' + ' + jobs[1][0] + ' 🎵', 'ok');
+              loadLibrary();
+              return;
+            }
+            var nm = jobs[i][0], mb = Math.round(jobs[i][1].byteLength / 104857.6) / 10;
+            setStatus('Saving ' + nm + ' (' + mb + ' MB)...', 'busy');
+            uploadBinary(nm, jobs[i][1]).then(function () {
+              return api('/api/music/meta',
+                { name: nm, meta: { stem_of: filename, created: Math.floor(Date.now() / 1000) } })
+                .catch(function () {});
+            }).then(function () { next(i + 1); },
+              function (e) {
+                if (e && e.missing) downloadBoth();
+                else setStatus('Stems saved but ' + nm + ' failed: ' + e.message, 'err');
+              });
+          })(0);
         },
         function (err) { setStatus('Stems failed: ' + (err && err.message ? err.message : err), 'err'); });
     });
@@ -737,6 +775,40 @@
     s.value = String(Math.min(4294967295, (parseInt(s.value, 10) || 42) + 1));
     runGeneration();
   });
+
+  // ---- upload a local audio file straight into the console library ----
+  $('lib-save').addEventListener('click', function () {
+    var file = $('cover-file').files && $('cover-file').files[0];
+    var btn = $('lib-save');
+    if (!file || btn.disabled) { cstat('Pick a file first', 'err'); return; }
+    var ext = (file.name.match(/\.(wav|mp3)$/i) || [''])[0].toLowerCase();
+    if (!ext) { cstat('Library upload accepts plain .wav or .mp3 files', 'err'); return; }
+    if (file.size > 64 * 1024 * 1024) { cstat('File is over the 64 MiB library cap', 'err'); return; }
+    var safe = file.name.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[-.]+|[-.]+$/g, '')
+      .replace(/\.wav$/i, '.wav').replace(/\.mp3$/i, '.mp3');
+    if (safe.length < 5) safe = 'upload_' + Date.now() + ext;
+    btn.disabled = true;
+    var t0 = Date.now();
+    cstat('Uploading ' + safe + ' (' + Math.round(file.size / 104857.6) / 10 + ' MB)...', 'busy');
+    file.arrayBuffer()
+      .then(function (buf) { return uploadBinary(safe, buf); })
+      .then(function () {
+        cstat('Saved ' + safe + ' to the library in ' +
+          Math.round((Date.now() - t0) / 1000) + 's ✅', 'ok');
+        $('cover-file').value = '';
+        loadLibrary();
+      })
+      .catch(function (e) {
+        cstat(e && e.missing ? 'This build has no library upload — flash the newest eboot'
+          : 'Upload failed: ' + (e && e.message ? e.message : e), 'err');
+      })
+      .then(function () { btn.disabled = false; });
+  });
+  function cstat(m, c) {
+    var el = $('cover-status');
+    el.textContent = m || '';
+    el.className = c || '';
+  }
 
   // ---- misc ----
   $('duration').addEventListener('input', function () { $('dur-val').textContent = $('duration').value; });

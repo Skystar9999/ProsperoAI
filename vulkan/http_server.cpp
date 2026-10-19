@@ -873,6 +873,7 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
     }
     std::size_t content_length = 0;
     bool has_length = false;
+    std::string upload_name;
     const char *line = std::strstr(buffer, "\r\n");
     while (line && line < header_end)
     {
@@ -887,6 +888,12 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
             std::string key = header.substr(0, colon), value = header.substr(colon + 1);
             for (char &c : key)
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (key == "x-upload-name")
+            {
+                const auto s = value.find_first_not_of(" \t");
+                const auto f = value.find_last_not_of(" \t");
+                upload_name = s == std::string::npos ? std::string() : value.substr(s, f - s + 1);
+            }
             if (key == "transfer-encoding")
             {
                 openai_error(api, sock, "400 Bad Request", "unsupported_transfer_encoding",
@@ -923,6 +930,81 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
         line = end;
     }
     const std::size_t body_start = header_end - buffer + 4;
+    // Binary library upload: POST /api/music/uploadbin with X-Upload-Name and
+    // an octet-stream body of any size up to 64 MiB. The body never fits the
+    // 256 KiB request buffer, so it streams straight to disk here and the
+    // response is already written when we return 0 (caller only closes).
+    if (std::strncmp(buffer, "POST /api/music/uploadbin", 25) == 0)
+    {
+        std::string &up_name = upload_name;
+        bool name_ok = up_name.size() >= 5 && up_name.size() <= 96 &&
+                       up_name.find("..") == std::string::npos &&
+                       (up_name.compare(up_name.size() - 4, 4, ".wav") == 0 ||
+                        up_name.compare(up_name.size() - 4, 4, ".mp3") == 0);
+        for (const char c : up_name)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '.' || c == '_' || c == '-'))
+                name_ok = false;
+        if (!has_length || !name_ok)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_upload",
+                         "Need Content-Length and a plain X-Upload-Name *.wav/*.mp3.");
+            return 0;
+        }
+        if (content_length > 64ull * 1024 * 1024)
+        {
+            openai_error(api, sock, "413 Payload Too Large", "upload_too_large",
+                         "Binary uploads are capped at 64 MiB.");
+            return 0;
+        }
+        if (!api_authorized(buffer))
+        {
+            openai_error(api, sock, "401 Unauthorized", "invalid_api_key",
+                         "A valid bearer API key is required.");
+            return 0;
+        }
+        const std::string path = std::string("/download0/ProsperoAI/work/audio/") + up_name;
+        std::FILE *file = std::fopen(path.c_str(), "wb");
+        if (!file)
+        {
+            openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
+                         path.c_str());
+            return 0;
+        }
+        std::size_t written = total > body_start ? total - body_start : 0;
+        if (written && std::fwrite(buffer + body_start, 1, written, file) != written)
+            written = 0;
+        std::vector<char> chunk(65536);
+        while (written && written < content_length)
+        {
+            const int received =
+                api.recv(sock, chunk.data(),
+                         static_cast<std::size_t>(
+                             std::min<std::size_t>(chunk.size(), content_length - written)), 0);
+            if (received <= 0 ||
+                std::fwrite(chunk.data(), 1, static_cast<std::size_t>(received), file) !=
+                    static_cast<std::size_t>(received))
+            {
+                written = 0;
+                break;
+            }
+            written += static_cast<std::size_t>(received);
+        }
+        std::fclose(file);
+        if (!written)
+        {
+            std::remove(path.c_str());
+            openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
+                         "Stream interrupted.");
+            return 0;
+        }
+        send_json(api, sock,
+                  nlohmann::json{{"ok", true}, {"name", up_name},
+                                 {"size", content_length}}
+                      .dump()
+                      .c_str());
+        return 0;
+    }
     if (content_length >= capacity - body_start)
     {
         openai_error(api, sock, "413 Payload Too Large", "request_too_large",
