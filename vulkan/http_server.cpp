@@ -1908,6 +1908,26 @@ void handle_music_files(const NetApi &api, int sock)
                             nlohmann::json{{"name", name},
                                            {"size", static_cast<long long>(st.st_size)},
                                            {"mtime", static_cast<long long>(st.st_mtime)}}});
+            // embed generation metadata sidecar (written by /api/music/meta)
+            if (std::strcmp(name + name_length - 4, ".abc") != 0)
+            {
+                const std::string base(name, name_length - 4);
+                const std::string meta_path = std::string(dir) + "/" + base + ".track.json";
+                if (FILE *mf = std::fopen(meta_path.c_str(), "rb"))
+                {
+                    std::fseek(mf, 0, SEEK_END);
+                    const long msize = std::ftell(mf);
+                    std::fseek(mf, 0, SEEK_SET);
+                    std::string mtext(static_cast<std::size_t>(msize > 0 ? msize : 0), '\0');
+                    if (msize > 0 && std::fread(mtext.data(), 1, mtext.size(), mf) == mtext.size())
+                    {
+                        auto mj = nlohmann::json::parse(mtext, nullptr, false);
+                        if (mj.is_object())
+                            rows.back().second["meta"] = std::move(mj);
+                    }
+                    std::fclose(mf);
+                }
+            }
         }
         closedir(dir_handle);
         std::sort(rows.begin(), rows.end(),
@@ -1965,6 +1985,64 @@ void handle_music_abc(const NetApi &api, int sock, const char *body)
         return;
     }
     std::fwrite(content.data(), 1, content.size(), file);
+    std::fclose(file);
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"path", path}}.dump().c_str());
+}
+
+// Music Studio: persist generation metadata (lyrics/style/seed/abc...) as a
+// sidecar <track>.track.json next to the audio file, so the library menu can
+// offer "Cover" (reload the exact settings) later. Values are flat
+// string/number fields; serialized size is capped at 80 KiB.
+void handle_music_meta(const NetApi &api, int sock, const char *body)
+{
+    const auto reject = [&api, sock](const char *reason) {
+        openai_error(api, sock, "400 Bad Request", "invalid_meta", reason);
+    };
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("name") || !j["name"].is_string() ||
+        !j.contains("meta") || !j["meta"].is_object())
+    {
+        reject("Expected {name, meta}.");
+        return;
+    }
+    const std::string name = j["name"].get<std::string>();
+    if (name.size() <= 4 || name.size() > 96 || name.find('/') != std::string::npos ||
+        name.find("..") != std::string::npos)
+    {
+        reject("Name must be a plain file name.");
+        return;
+    }
+    const std::size_t dot = name.rfind('.');
+    if (dot == std::string::npos ||
+        (name.compare(dot, 4, ".wav") != 0 && name.compare(dot, 4, ".mp3") != 0))
+    {
+        reject("Track name must be *.wav or *.mp3.");
+        return;
+    }
+    // keep only flat scalar fields, drop anything exotic
+    nlohmann::json clean = nlohmann::json::object();
+    for (auto &[key, val] : j["meta"].items())
+    {
+        if (val.is_string()) clean[key] = val.get<std::string>();
+        else if (val.is_number_integer()) clean[key] = val.get<long long>();
+    }
+    const std::string dumped = clean.dump();
+    if (dumped.size() > 80 * 1024)
+    {
+        reject("Meta too large (80 KiB cap).");
+        return;
+    }
+    const std::string path =
+        std::string("/download0/ProsperoAI/work/audio/") + name.substr(0, dot) + ".track.json";
+    FILE *file = std::fopen(path.c_str(), "wb");
+    if (!file)
+    {
+        openai_error(api, sock, "500 Internal Server Error", "meta_write_failed", path.c_str());
+        return;
+    }
+    std::fwrite(dumped.data(), 1, dumped.size(), file);
     std::fclose(file);
     send_json(api, sock, nlohmann::json{{"ok", true}, {"path", path}}.dump().c_str());
 }
@@ -2116,6 +2194,10 @@ void handle_music_delete(const NetApi &api, int sock, const char *body)
         openai_error(api, sock, "404 Not Found", "delete_failed", path.c_str());
         return;
     }
+    // best effort: drop the metadata sidecar too
+    const std::string sidecar =
+        std::string("/download0/ProsperoAI/work/audio/") + name.substr(0, name.rfind('.')) + ".track.json";
+    std::remove(sidecar.c_str());
     send_json(api, sock, nlohmann::json{{"ok", true}, {"deleted", name}}.dump().c_str());
 }
 
@@ -2171,6 +2253,12 @@ void handle_music_rename(const NetApi &api, int sock, const char *body)
         openai_error(api, sock, "404 Not Found", "rename_failed", from.c_str());
         return;
     }
+    // best effort: the metadata sidecar follows the track
+    const std::string side_from = "/download0/ProsperoAI/work/audio/" +
+                                  src.substr(0, src.rfind('.')) + ".track.json";
+    const std::string side_to = "/download0/ProsperoAI/work/audio/" +
+                                dst.substr(0, dst.rfind('.')) + ".track.json";
+    std::rename(side_from.c_str(), side_to.c_str());
     send_json(api, sock, nlohmann::json{{"ok", true}, {"renamed", dst}}.dump().c_str());
 }
 #endif
@@ -2260,6 +2348,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_files(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/meta") == 0)
+        handle_music_meta(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/upload") == 0)
         handle_music_upload(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/rename") == 0)

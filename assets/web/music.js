@@ -162,7 +162,77 @@
       done(blob.size);
     }).catch(fail);
   }
-  function makePlayer(url, filename, isMp3Source) {
+  // ---- Cover: reload a track's saved generation settings into the form ----
+  function applyCover(meta, filename) {
+    if (meta.lyrics !== undefined) $('lyrics').value = meta.lyrics;
+    if (meta.style !== undefined) $('style').value = meta.style;
+    if (meta.seed !== undefined) $('seed').value = String(meta.seed);
+    if (meta.duration !== undefined) {
+      $('duration').value = String(meta.duration);
+      $('dur-val').textContent = $('duration').value;
+    }
+    if (meta.cot !== undefined) $('cot').value = meta.cot;
+    if (meta.abc_name !== undefined) $('abc-name').value = meta.abc_name;
+    if (meta.abc_content) { $('abc').value = meta.abc_content; if (meta.abc_name) knownFiles[meta.abc_name] = true; }
+    var base = String(filename || '').replace(/\.(wav|mp3)$/i, '').replace(/_seed\d+$/i, '');
+    $('track-name').value = (base ? base + ' cover' : 'cover');
+    try { formSaveNow(); } catch (e) {}
+    $('lyrics').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setStatus('Cover settings loaded from ' + filename + ' — press GENERATE', 'ok');
+  }
+
+  // ---- Master: explicit-only mastering (peak normalize + limiter), browser-side ----
+  function encodeWav16(buffer) {
+    var ch = buffer.numberOfChannels, sr = buffer.sampleRate, len = buffer.length;
+    var bytes = 44 + len * ch * 2;
+    var ab = new ArrayBuffer(bytes), dv = new DataView(ab);
+    function str(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+    str(0, 'RIFF'); dv.setUint32(4, bytes - 8, true); str(8, 'WAVEfmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, ch, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * ch * 2, true);
+    dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true);
+    str(36, 'data'); dv.setUint32(40, len * ch * 2, true);
+    var chans = [], c;
+    for (c = 0; c < ch; c++) chans.push(buffer.getChannelData(c));
+    var off = 44;
+    for (var i = 0; i < len; i++) {
+      for (c = 0; c < ch; c++) {
+        var v = Math.max(-1, Math.min(1, chans[c][i]));
+        dv.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7FFF, true); off += 2;
+      }
+    }
+    return new Blob([ab], { type: 'audio/wav' });
+  }
+  function masterTrack(url, onProgress) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      var ac = new AC();
+      return ac.decodeAudioData(buf).then(function (decoded) {
+        var peak = 0, c, d = decoded.getChannelData(0), i;
+        for (c = 0; c < decoded.numberOfChannels; c++) {
+          d = decoded.getChannelData(c);
+          for (i = 0; i < d.length; i++) { var a = d[i] < 0 ? -d[i] : d[i]; if (a > peak) peak = a; }
+        }
+        if (peak < 0.001) throw new Error('audio is silent');
+        var gain = Math.min(0.89 / peak, 12);
+        var oc = new OfflineAudioContext(decoded.numberOfChannels, decoded.length, decoded.sampleRate);
+        var src = oc.createBufferSource(); src.buffer = decoded;
+        var g = oc.createGain(); g.gain.value = gain;
+        var lim = oc.createDynamicsCompressor();
+        lim.threshold.value = -6; lim.knee.value = 4; lim.ratio.value = 16;
+        lim.attack.value = 0.003; lim.release.value = 0.12;
+        src.connect(g); g.connect(lim); lim.connect(oc.destination);
+        src.start();
+        onProgress('Mastering (normalize to -1 dBFS + limiter)...');
+        return oc.startRendering();
+      }).then(function (rendered) { ac.close(); return rendered; });
+    });
+  }
+
+  function makePlayer(url, filename, isMp3Source, meta) {
     var wrap = document.createElement('div'); wrap.className = 'pl';
     var audio = new Audio(); audio.preload = 'metadata'; audio.src = url;
     var row = document.createElement('div'); row.className = 'pl-row';
@@ -172,7 +242,20 @@
     var menu = document.createElement('div'); menu.className = 'pl-menu-box'; menu.style.display = 'none';
     var dlWav = document.createElement('a'); dlWav.href = url; dlWav.download = filename; dlWav.textContent = '⬇ Download WAV'; dlWav.style.display = isMp3Source ? 'none' : '';
     var dlMp3 = document.createElement('button'); dlMp3.type = 'button'; dlMp3.textContent = isMp3Source ? '⬇ Download MP3' : '⬇ Download MP3 (320k, converts in browser)';
-    menu.appendChild(dlWav); menu.appendChild(dlMp3);
+    var coverBtn = document.createElement('button'); coverBtn.type = 'button';
+    if (meta) {
+      coverBtn.textContent = '🎤 Cover — load lyrics/style/seed';
+      coverBtn.addEventListener('click', function (e) {
+        e.stopPropagation(); menu.style.display = 'none';
+        applyCover(meta, filename);
+      });
+    } else {
+      coverBtn.textContent = '🎤 Cover (no saved settings — old track)';
+      coverBtn.disabled = true; coverBtn.className = 'pl-menu-dim';
+    }
+    var masterBtn = document.createElement('button'); masterBtn.type = 'button';
+    masterBtn.textContent = '🎚 Master (normalize + limiter)';
+    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn);
     row.appendChild(play); row.appendChild(tm); row.appendChild(menuBtn); row.appendChild(menu);
     var seek = document.createElement('input'); seek.type = 'range'; seek.className = 'pl-seek'; seek.min = '0'; seek.max = '1000'; seek.value = '0';
     wrap.appendChild(row); wrap.appendChild(seek);
@@ -214,6 +297,23 @@
         function (bytes) { setStatus('MP3 ready: ' + fmtSize(bytes) + ' — check your Downloads', 'ok'); },
         function (err) { setStatus('MP3 conversion failed: ' + err.message, 'err'); });
     });
+    masterBtn.addEventListener('click', function (e) {
+      e.stopPropagation(); menu.style.display = 'none';
+      var m0 = Date.now();
+      setStatus('Mastering ' + filename + ' (decode + normalize + limiter)...', 'busy');
+      masterTrack(url, function (msg) { setStatus(msg, 'busy'); }).then(function (rendered) {
+        var blob = encodeWav16(rendered);
+        var outName = filename.replace(/\.(wav|mp3)$/i, '') + '-mastered.wav';
+        var a2 = document.createElement('a');
+        a2.href = URL.createObjectURL(blob); a2.download = outName;
+        document.body.appendChild(a2); a2.click();
+        setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
+        setStatus('Mastered ' + outName + ' in ' + Math.round((Date.now() - m0) / 1000) +
+          's (' + fmtSize(blob.size) + ') — check your Downloads', 'ok');
+      }).catch(function (err) {
+        setStatus('Master failed: ' + (err && err.message ? err.message : err), 'err');
+      });
+    });
     var api_ = { pause: function () { audio.pause(); } };
     return wrap;
   }
@@ -240,7 +340,7 @@
         m.appendChild(n); m.appendChild(s);
         d.appendChild(m);
         if (/\.(wav|mp3)$/i.test(f.name)) {
-          d.appendChild(makePlayer(AUDIO_DIR + encodeURIComponent(f.name), f.name, /\.mp3$/i.test(f.name)));
+          d.appendChild(makePlayer(AUDIO_DIR + encodeURIComponent(f.name), f.name, /\.mp3$/i.test(f.name), f.meta));
         } else {
           var ext = document.createElement('div'); ext.className = 'path';
           ext.textContent = 'ABC — use \u201cLoad into editor\u201d to edit it';
@@ -367,11 +467,26 @@
         var finish = function (finalUrl) {
           var res = $('result');
           res.innerHTML = '';
-          res.appendChild(makePlayer(finalUrl, (finalUrl.match(/[^/]+(\?|$)/) || ['track.wav'])[0], /\.mp3$/i.test(finalUrl)));
+          var fname = (finalUrl.match(/[^/]+(\?|$)/) || ['track.wav'])[0];
+          // snapshot the exact settings so the library menu can offer Cover later
+          var meta = {
+            lyrics: $('lyrics').value,
+            style: $('style').value,
+            seed: parseInt($('seed').value, 10) || 42,
+            duration: parseInt($('duration').value, 10) || 240,
+            model: String($('model').value || ''),
+            cot: $('cot').value,
+            abc_name: $('abc-name').value.trim(),
+            created: Math.floor(Date.now() / 1000)
+          };
+          var abcText = $('abc').value;
+          if (abcText.trim() && abcText.length <= 60000) meta.abc_content = abcText;
+          res.appendChild(makePlayer(finalUrl, fname, /\.mp3$/i.test(finalUrl), meta));
           var p = document.createElement('div'); p.className = 'path'; p.textContent = finalUrl;
           res.appendChild(p);
           setStatus('Done in ' + Math.round((Date.now() - t0) / 1000) + 's 🎵');
-          loadLibrary();
+          api('/api/music/meta', { name: fname, meta: meta })
+            .then(loadLibrary).catch(loadLibrary);
         };
         var nice = $('track-name').value.trim();
         if (nice) {
