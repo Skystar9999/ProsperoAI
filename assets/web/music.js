@@ -162,6 +162,44 @@
       done(blob.size);
     }).catch(fail);
   }
+  // ---- Stems: browser-side AI separation (ONNX Web, validated vs PyTorch) ----
+  // Worker script must load with a JS MIME from a same-origin URL (served at
+  // /stems-worker.js by the app's HTTP server). The blob: fallback only works
+  // in secure contexts (localhost dev) — http://console-ip blocks blob workers.
+  function stemsFromUrl(url, name, onStage, done, fail) {
+    var settled = false, lastStage = '', lastPct = 0, triedBlob = false;
+    function wire(w, isBlob) {
+      var gotMsg = false;
+      w.onmessage = function (e) {
+        gotMsg = true;
+        var d = e.data || {};
+        if (d.stage !== undefined) { lastStage = d.stage; onStage(lastStage || 'Separating stems', lastPct || null); return; }
+        if (d.pct !== undefined) { lastPct = d.pct; onStage(lastStage || 'Separating stems', lastPct); return; }
+        if (d.done) { settled = true; w.terminate(); done(d.vocals, d.inst, d.secs); return; }
+        if (d.error) { settled = true; w.terminate(); fail(new Error(d.error)); }
+      };
+      w.onerror = function () {
+        if (settled) return;
+        if (!gotMsg && !isBlob && !triedBlob) { triedBlob = true; w.terminate(); blobPath(); return; }
+        settled = true; w.terminate(); fail(new Error('worker crashed'));
+      };
+      w.postMessage({ url: new URL(url, location.origin).href, baseUrl: location.origin });
+    }
+    function blobPath() {
+      fetch('/download0/ProsperoAI/work/audio/stems-worker.js').then(function (r) {
+        if (!r.ok) throw new Error('stems worker missing (HTTP ' + r.status + ')');
+        return r.text();
+      }).then(function (code) {
+        wire(new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))), true);
+      }).catch(function (e) { if (!settled) { settled = true; fail(e); } });
+    }
+    try {
+      wire(new Worker('/stems-worker.js'), false);
+    } catch (e) {
+      blobPath();
+    }
+  }
+
   // ---- shared volume (persisted, applied to every player live) ----
   function getStoredVol() {
     var v = parseInt(localStorage.getItem('prospero-vol'), 10);
@@ -265,7 +303,10 @@
     }
     var masterBtn = document.createElement('button'); masterBtn.type = 'button';
     masterBtn.textContent = '🎚 Master (normalize + limiter)';
-    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn);
+    var stemsBtn = document.createElement('button'); stemsBtn.type = 'button';
+    stemsBtn.textContent = '✂ Stems — vocals + instrumental (browser AI)';
+    if (isMp3Source) stemsBtn.style.display = 'none';
+    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn); menu.appendChild(stemsBtn);
     row.appendChild(play); row.appendChild(tm); row.appendChild(vol); row.appendChild(menuBtn); row.appendChild(menu);
     vol.addEventListener('input', function () {
       try { localStorage.setItem('prospero-vol', vol.value); } catch (e) {}
@@ -328,6 +369,27 @@
       }).catch(function (err) {
         setStatus('Master failed: ' + (err && err.message ? err.message : err), 'err');
       });
+    });
+    stemsBtn.addEventListener('click', function (e) {
+      e.stopPropagation(); menu.style.display = 'none';
+      var s0 = Date.now();
+      setStatus('Stems: preparing...', 'busy');
+      stemsFromUrl(url, filename,
+        function (stg, p) { setStatus((stg || 'Separating stems') + (p ? ' — ' + p + '%' : '') + ' — keep this page open', 'busy'); },
+        function (vocBuf, instBuf, secs) {
+          var base = filename.replace(/\.(wav|mp3)$/i, '');
+          [['-vocals.wav', vocBuf], ['-instrumental.wav', instBuf]].forEach(function (pair, idx) {
+            var blob = new Blob([pair[1]], { type: 'audio/wav' });
+            var a2 = document.createElement('a');
+            a2.href = URL.createObjectURL(blob); a2.download = base + pair[0];
+            document.body.appendChild(a2);
+            setTimeout(function () { a2.click(); }, idx * 400); // Chrome multi-download gesture grace
+            setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 15000);
+          });
+          setStatus('Stems done in ' + secs + 's — downloaded ' + base + '-vocals.wav + -instrumental.wav (' +
+            Math.round((Date.now() - s0) / 1000) + 's total incl. model)', 'ok');
+        },
+        function (err) { setStatus('Stems failed: ' + (err && err.message ? err.message : err), 'err'); });
     });
     var api_ = { pause: function () { audio.pause(); } };
     return wrap;

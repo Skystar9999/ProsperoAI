@@ -412,6 +412,7 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
         {"/voice-recording.js", "voice-recording.js", "text/javascript; charset=utf-8"},
         {"/lame.min.js", "lame.min.js", "text/javascript; charset=utf-8"},
         {"/mp3-worker.js", "mp3-worker.js", "text/javascript; charset=utf-8"},
+        {"/stems-worker.js", "stems-worker.js", "text/javascript; charset=utf-8"},
         {"/music", "music.html", "text/html; charset=utf-8"},
         {"/music.css", "music.css", "text/css; charset=utf-8"},
         {"/music.js", "music.js", "text/javascript; charset=utf-8"},
