@@ -113,6 +113,7 @@ bool read_pcm_wav_stereo(const std::string &path, std::vector<float> &samples, i
             break;
         }
         const std::uint32_t chunk = rd32(file);
+        const long body_start = std::ftell(file);
         if (std::memcmp(tag, "fmt ", 4) == 0 && chunk >= 16)
         {
             format = rd16(file);
@@ -125,14 +126,15 @@ bool read_pcm_wav_stereo(const std::string &path, std::vector<float> &samples, i
         else if (std::memcmp(tag, "data", 4) == 0)
         {
             data_bytes = chunk;
-            data_at = std::ftell(file);
+            data_at = body_start;
         }
-        const long next = std::ftell(file) + static_cast<long>(chunk) + (chunk & 1u);
+        const long next = body_start + static_cast<long>(chunk) + (chunk & 1u);
         if (std::fseek(file, next, SEEK_SET) != 0)
             break;
     }
-    // 1 = PCM16, 3 = IEEE float 32.
-    if (!ok || !data_bytes || !format || !rate || (format != 1 && format != 3) ||
+    // 1 = PCM16, 3 = IEEE float 32. The scan loop always ends at EOF with
+    // ok=false, so the parsed fields are the only meaningful gate.
+    if (!data_bytes || !format || !rate || (format != 1 && format != 3) ||
         (bits != 16 && bits != 32) || channels < 1 || channels > 2 ||
         (format == 1 && bits != 16) || (format == 3 && bits != 32) ||
         data_bytes > 256u * 1024u * 1024u || data_at < 0)
