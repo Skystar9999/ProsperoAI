@@ -195,7 +195,7 @@ bool read_pcm_wav_stereo(const std::string &path, std::vector<float> &samples, i
 bool write_pcm_wav_stereo(const std::string &path, const float *interleaved, std::size_t frames,
                           int sample_rate)
 {
-    std::FILE *file = std::fopen(path.c_str(), "wbx");
+    std::FILE *file = std::fopen(path.c_str(), "wb");
     if (!file)
         return false;
     const std::uint32_t data_bytes = static_cast<std::uint32_t>(frames * 2u * 2u);
@@ -255,7 +255,7 @@ void write_stem_meta(const std::string &stem_path, const std::string &parent_nam
     if (dot != std::string::npos)
         json_path = json_path.substr(0, dot);
     json_path += ".track.json";
-    std::FILE *file = std::fopen(json_path.c_str(), "wbx");
+    std::FILE *file = std::fopen(json_path.c_str(), "wb");
     if (!file)
         return;
     std::fprintf(file, "{\"stem_of\":\"%s\",\"engine\":\"htdemucs-vulkan\"}", parent_name.c_str());
