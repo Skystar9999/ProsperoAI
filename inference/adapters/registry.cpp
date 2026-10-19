@@ -22,12 +22,15 @@ int ps5_yue2_generate(const char *, const char *, char *, std::size_t, std::uint
                       gpt_runtime_progress_fn);
 int ps5_sheetsage_transcribe(const char *, const char *, char *, std::size_t, std::uint64_t *,
                              gpt_runtime_progress_fn);
+int ps5_stems_separate(const char *, const char *, char *, std::size_t, std::uint64_t *,
+                       gpt_runtime_progress_fn);
 void ps5_media_stop();
 void ps5_sd_shutdown();
 void ps5_stable_audio_release();
 void ps5_ace_step_release();
 void ps5_yue2_release();
 void ps5_sheetsage_release();
+void ps5_stems_release();
 void ps5_chatterbox_release();
 }
 
@@ -84,6 +87,10 @@ int generate_media(const GenerationRequest &request)
             result = ps5_sheetsage_transcribe(request.model.root.c_str(), prompt,
                                               request.output, request.output_capacity,
                                               &elapsed, request.progress);
+        else if (request.model.id.find("htdemucs") != std::string::npos)
+            result = ps5_stems_separate(request.model.root.c_str(), prompt,
+                                        request.output, request.output_capacity,
+                                        &elapsed, request.progress);
         else
             result = ps5_stable_audio_generate(request.model.root.c_str(), prompt,
                                                request.output, request.output_capacity,
@@ -132,6 +139,7 @@ void release_media()
     ps5_ace_step_release();
     ps5_yue2_release();
     ps5_sheetsage_release();
+    ps5_stems_release();
     ps5_chatterbox_release();
     ps5_media_stop();
     ps5_sd_shutdown();

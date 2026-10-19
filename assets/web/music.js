@@ -323,7 +323,10 @@
     var stemsBtn = document.createElement('button'); stemsBtn.type = 'button';
     stemsBtn.textContent = '✂ Stems — vocals + instrumental (browser AI)';
     if (isMp3Source) stemsBtn.style.display = 'none';
-    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn); menu.appendChild(stemsBtn);
+    var ps5StemsBtn = document.createElement('button'); ps5StemsBtn.type = 'button';
+    ps5StemsBtn.textContent = '✂ Stems — PS5 GPU (htdemucs, 4 stems)';
+    if (isMp3Source) ps5StemsBtn.style.display = 'none';
+    menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn); menu.appendChild(stemsBtn); menu.appendChild(ps5StemsBtn);
     row.appendChild(play); row.appendChild(tm); row.appendChild(vol); row.appendChild(menuBtn); row.appendChild(menu);
     vol.addEventListener('input', function () {
       try { localStorage.setItem('prospero-vol', vol.value); } catch (e) {}
@@ -428,6 +431,52 @@
           })(0);
         },
         function (err) { setStatus('Stems failed: ' + (err && err.message ? err.message : err), 'err'); });
+    });
+    // PS5-side separation: htdemucs runs on the console's GPU through the
+    // audio.cpp adapter — the phone only fires the request and may close.
+    ps5StemsBtn.addEventListener('click', function (e) {
+      e.stopPropagation(); menu.style.display = 'none';
+      setStatus('Stems (PS5 GPU): loading htdemucs on the console...', 'busy');
+      var t0 = Date.now();
+      api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
+        .then(function () {
+          setStatus('Stems (PS5 GPU): separating on Vulkan — you can close this page', 'busy');
+          return api('/api/generate', { model: 'htdemucs-q8_0', prompt: 'separate ' + filename }, 3600000);
+        })
+        .then(function (j) {
+          var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
+          if (j.error || resp.indexOf('Stems written') < 0) throw new Error(resp.slice(0, 240));
+          var secs = Math.round((Date.now() - t0) / 1000);
+          loadLibrary();
+          var paths = resp.match(/\/download0\/[^\s,]+\.wav/g) || [];
+          var grab = paths.filter(function (p) {
+            return /-(vocals|instrumental)\.wav$/.test(p);
+          });
+          setStatus('Stems (PS5 GPU) done in ' + secs + 's — ' + paths.length +
+            ' files in library' + (grab.length ? ', sending vocals + instrumental to this device...' : ''), 'ok');
+          // Auto-deliver to the phone: fetch as blob then trigger a download;
+          // a[download] alone would navigate on some mobile browsers.
+          (function next() {
+            if (!grab.length) return;
+            var p = grab.shift();
+            var nm = decodeURIComponent(p.substring(p.lastIndexOf('/') + 1));
+            fetch(p).then(function (r) {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.blob();
+            }).then(function (b) {
+              var a = document.createElement('a');
+              a.href = URL.createObjectURL(b); a.download = nm;
+              document.body.appendChild(a); a.click();
+              setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+              setTimeout(next, 1500);
+            }).catch(function () {
+              setStatus('Stems ready in library — but auto-download of ' + nm + ' failed, use Download WAV', 'err');
+            });
+          })();
+        })
+        .catch(function (err) {
+          setStatus('Stems (PS5 GPU) failed: ' + (err && err.message ? err.message : err), 'err');
+        });
     });
     var api_ = { pause: function () { audio.pause(); } };
     return wrap;
