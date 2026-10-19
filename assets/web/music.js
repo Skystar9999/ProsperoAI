@@ -214,16 +214,21 @@
     var base = String(filename || '').replace(/\.(wav|mp3)$/i, '').replace(/_seed\d+$/i, '');
     if (!meta || !Object.keys(meta).length)
       $('track-name').value = base + ' var';
-    setStatus('Cover+ABC: transcribing ' + filename + ' with SheetSage2 (1-3 min, you can close the page)...', 'busy');
     var t0 = Date.now();
-    api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
-      .then(function () {
-        return api('/api/generate', { model: 'sheetsage2-orig', prompt: 'transcribe ' + filename }, 1800000);
-      })
-      .then(function (j) {
-        var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
-        var m = resp.match(/\/download0\/\S+?\.abc/);
-        if (!m) throw new Error('no ABC artifact in response: ' + resp.slice(0, 220));
+    var once = function (retry) {
+      setStatus('Cover+ABC: transcribing ' + filename + ' with SheetSage2 (1-3 min, you can close the page)...', 'busy');
+      return api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
+        .then(function () {
+          return api('/api/generate', { model: 'sheetsage2-orig', prompt: 'transcribe ' + filename }, 1800000);
+        })
+        .then(function (j) {
+          var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
+          if (resp.indexOf('NEEDS_RESTART') >= 0 && retry > 0) {
+            setStatus('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying...', 'busy');
+            return restartTitle().then(function () { return once(retry - 1); });
+          }
+          var m = resp.match(/\/download0\/\S+?\.abc/);
+          if (!m) throw new Error(resp.slice(0, 220));
         var path = m[0].replace(/["',).]+$/, '');
         var fname = path.substring(path.lastIndexOf('/') + 1);
         return fetch(AUDIO_DIR + encodeURIComponent(fname)).then(function (r) {
@@ -238,13 +243,14 @@
           loadAbcSelect();
           try { formSaveNow(); } catch (e) {}
           setStatus('Cover+ABC done in ' + Math.round((Date.now() - t0) / 1000) +
-            's — score armed for conditioning. RESTART the PS5 app before GENERATE, then tweak lyrics/style and go.', 'ok');
+            's — score armed. Tweak lyrics/style and press GENERATE; memory restarts are automatic now.', 'ok');
           $('abc').scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
-      })
-      .catch(function (e) {
-        setStatus('Cover+ABC failed: ' + (e && e.message ? e.message : e), 'err');
       });
+    };
+    once(2).catch(function (e) {
+      setStatus('Cover+ABC failed: ' + (e && e.message ? e.message : e), 'err');
+    });
   }
 
   // ---- Master: explicit-only mastering (peak normalize + limiter), browser-side ----
@@ -653,6 +659,16 @@
     return pre.then(doGenerate).then(function (j) {
       clearInterval(timer);
       var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 300));
+      if (resp.indexOf('NEEDS_RESTART') >= 0 && !ov.noRestart) {
+        clearInterval(timer);
+        say('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying once...', 'busy');
+        return restartTitle().then(function () {
+          var ov2 = {};
+          for (var k in ov) ov2[k] = ov[k];
+          ov2.noRestart = true;
+          return generateOnce(ov2);
+        });
+      }
       var m = resp.match(/\/download0\/\S+?\.(?:wav|mp3)/);
       var res = $('result');
       res.innerHTML = '';
