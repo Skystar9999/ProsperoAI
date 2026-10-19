@@ -445,13 +445,14 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                       "audio/<file>.wav'");
         return 1;
     }
-    // Contiguous-memory gate: the SheetSage encoder graph asks ggml-vulkan for
-    // one ~4.2 GiB buffer. After a big model (YuE2) has loaded and released, the
-    // kernel direct pool can report ~10 GiB total free but only ~3.4 GiB in the
-    // largest contiguous block, and the encoder dies 30 s deep in
-    // "encoder backend buffer allocation failed". Fail fast, machine-readable,
-    // so the UI can restart the title and retry transparently.
-    if (prospero_memory::largest_free_block() < (4800ull << 20))
+    // Contiguous-memory gate: SheetSage needs ~2.7 GiB of weights loaded into
+    // the direct pool FIRST, then ggml-vulkan wants one ~3.4 GiB buffer for the
+    // encoder graph (4.0 GiB gallocr reservation). Measurements (build #13):
+    // with largest block 6226 MiB the weights fit but the encoder buffer still
+    // failed — the load itself consumes the headroom. So require ~7 GiB
+    // contiguous up-front; below that the title restarts automatically (the UI
+    // reacts to NEEDS_RESTART) instead of dying 30 s deep in graph build.
+    if (prospero_memory::largest_free_block() < (7000ull << 20))
     {
         const unsigned long long mb =
             static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20);
@@ -460,7 +461,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         stage_log(line);
         std::snprintf(response, response_capacity,
                       "NEEDS_RESTART GPU memory fragmented: largest contiguous block is %llu MiB "
-                      "and SheetSage needs ~4.8 GiB. Restart the title and retry.", mb);
+                      "and SheetSage needs ~7 GiB free. Restart the title and retry.", mb);
         return 1;
     }
     const std::string model_root(root);
