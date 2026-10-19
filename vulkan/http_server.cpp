@@ -1984,6 +1984,166 @@ bool handle_conversations(const NetApi &api, int sock, const char *method, const
 }
 
 #if defined(PS5_LLAMA_VULKAN) && defined(PROSPERO_UI_VULKAN)
+// Music Studio: bundle a track's stems into one store-only ZIP (WAV data is
+// incompressible, so no deflate — headers + raw bytes, streamed in 16 KB
+// chunks with a two-pass CRC so nothing large is buffered in heap).
+namespace stems_zip {
+struct CrcTable
+{
+    std::uint32_t t[256];
+    explicit CrcTable()
+    {
+        for (std::uint32_t i = 0; i < 256; ++i)
+        {
+            std::uint32_t c = i;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1u) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+    }
+};
+
+bool file_crc_size(const char *path, const CrcTable &ct, std::uint32_t &crc, long &size)
+{
+    FILE *f = std::fopen(path, "rb");
+    if (!f)
+        return false;
+    crc = 0xFFFFFFFFu;
+    size = 0;
+    char buf[16384];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) != 0;)
+    {
+        for (std::size_t i = 0; i < n; ++i)
+            crc = ct.t[(crc ^ static_cast<std::uint8_t>(buf[i])) & 0xFFu] ^ (crc >> 8);
+        size += static_cast<long>(n);
+    }
+    crc ^= 0xFFFFFFFFu;
+    std::fclose(f);
+    return true;
+}
+
+void put16(std::uint8_t *p, std::uint16_t v)
+{
+    p[0] = static_cast<std::uint8_t>(v);
+    p[1] = static_cast<std::uint8_t>(v >> 8);
+}
+void put32(std::uint8_t *p, std::uint32_t v)
+{
+    for (int i = 0; i < 4; ++i)
+        p[i] = static_cast<std::uint8_t>(v >> (8 * i));
+}
+} // namespace stems_zip
+
+void handle_music_stems_zip(const NetApi &api, int sock, const char *track)
+{
+    using stems_zip::CrcTable;
+    const std::string name(track);
+    if (name.size() < 5 || name.size() > 96 || name.find("..") != std::string::npos ||
+        name.compare(name.size() - 4, 4, ".wav") != 0)
+    {
+        send_status(api, sock, "400 Bad Request", "text/plain", "track must be a plain .wav name.");
+        return;
+    }
+    for (char c : name)
+    {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                        c == '.' || c == '_' || c == '-';
+        if (!ok)
+        {
+            send_status(api, sock, "400 Bad Request", "text/plain", "track name has bad chars.");
+            return;
+        }
+    }
+    static const char *stems[] = {"drums", "bass", "other", "vocals", "instrumental"};
+    const std::string base = name.substr(0, name.size() - 4);
+    const std::string dir = "/download0/ProsperoAI/work/audio/";
+    struct Entry
+    {
+        std::string path, member;
+        long size;
+        std::uint32_t crc;
+        long offset;
+    };
+    static const CrcTable ct{};
+    std::vector<Entry> entries;
+    for (const char *stem : stems)
+    {
+        Entry e;
+        e.path = dir + base + "-" + stem + ".wav";
+        e.member = base + "-" + stem + ".wav";
+        if (!stems_zip::file_crc_size(e.path.c_str(), ct, e.crc, e.size))
+            continue;
+        entries.push_back(std::move(e));
+    }
+    if (entries.empty())
+    {
+        send_status(api, sock, "404 Not Found", "text/plain", "No stems found for that track.");
+        return;
+    }
+    long total = 0;
+    for (auto &e : entries)
+    {
+        e.offset = total; // local headers pack from 0; the central directory follows them
+        total += 30 + static_cast<long>(e.member.size()) + e.size;
+    }
+    for (auto &e : entries)
+        total += 46 + static_cast<long>(e.member.size());
+    total += 22; // EOCD sits at the tail
+    char header[512];
+    std::snprintf(header, sizeof(header),
+                  "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\n"
+                  "Content-Disposition: attachment; filename=\"%.80s-stems.zip\"\r\n"
+                  "Content-Length: %ld\r\nX-Content-Type-Options: nosniff\r\n"
+                  "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                  base.c_str(), total);
+    send_all(api, sock, header, std::strlen(header));
+    std::uint8_t rec[30];
+    char buf[16384];
+    for (auto &e : entries)
+    {
+        std::memset(rec, 0, sizeof(rec));
+        stems_zip::put32(rec + 0, 0x04034B50u);
+        stems_zip::put16(rec + 4, 20);
+        stems_zip::put32(rec + 14, e.crc);
+        stems_zip::put32(rec + 18, static_cast<std::uint32_t>(e.size));
+        stems_zip::put32(rec + 22, static_cast<std::uint32_t>(e.size));
+        stems_zip::put16(rec + 26, static_cast<std::uint16_t>(e.member.size()));
+        send_all(api, sock, rec, sizeof(rec));
+        send_all(api, sock, e.member.data(), e.member.size());
+        FILE *f = std::fopen(e.path.c_str(), "rb");
+        if (!f)
+            break;
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) != 0;)
+            send_all(api, sock, buf, n);
+        std::fclose(f);
+    }
+    long cd_size = 0;
+    for (auto &e : entries)
+    {
+        std::uint8_t crec[46];
+        std::memset(crec, 0, sizeof(crec));
+        stems_zip::put32(crec + 0, 0x02014B50u);
+        stems_zip::put16(crec + 4, 20);
+        stems_zip::put16(crec + 6, 20);
+        stems_zip::put32(crec + 16, e.crc);
+        stems_zip::put32(crec + 20, static_cast<std::uint32_t>(e.size));
+        stems_zip::put32(crec + 24, static_cast<std::uint32_t>(e.size));
+        stems_zip::put16(crec + 28, static_cast<std::uint16_t>(e.member.size()));
+        stems_zip::put32(crec + 42, static_cast<std::uint32_t>(e.offset));
+        send_all(api, sock, crec, sizeof(crec));
+        send_all(api, sock, e.member.data(), e.member.size());
+        cd_size += 46 + static_cast<long>(e.member.size());
+    }
+    std::uint8_t eocd[22];
+    std::memset(eocd, 0, sizeof(eocd));
+    stems_zip::put32(eocd + 0, 0x06054B50u);
+    stems_zip::put16(eocd + 8, static_cast<std::uint16_t>(entries.size()));
+    stems_zip::put16(eocd + 10, static_cast<std::uint16_t>(entries.size()));
+    stems_zip::put32(eocd + 12, static_cast<std::uint32_t>(cd_size));
+    stems_zip::put32(eocd + 16, static_cast<std::uint32_t>(total - cd_size - 22));
+    send_all(api, sock, eocd, sizeof(eocd));
+}
+
 // Music Studio: list generated audio + ABC files under work/audio, newest first.
 void handle_music_files(const NetApi &api, int sock)
 {
@@ -2447,6 +2607,9 @@ void handle_connection(const NetApi &api, int sock)
         handle_model_download_action(api, sock, body, false);
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/music/files") == 0)
         handle_music_files(api, sock);
+    else if (std::strcmp(method, "GET") == 0 &&
+             std::strncmp(path, "/api/music/stems.zip?track=", 25) == 0)
+        handle_music_stems_zip(api, sock, path + 25);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/meta") == 0)
