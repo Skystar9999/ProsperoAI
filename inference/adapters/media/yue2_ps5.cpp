@@ -469,7 +469,11 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
         // is intentionally not forwarded. The prompt carries the style description.
         if (!request || audiocpp_request_set_text(request, prompt, nullptr) != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "style", prompt) != AUDIOCPP_OK ||
-            audiocpp_request_set_option(request, "cot", "off") != AUDIOCPP_OK ||
+            // cot=melody is the proven safe default: full-length lyric runs with
+            // cot=off blow up allocating the Qwen batched decode graph (observed
+            // on fresh boots, 240 s lyric sets). Explicit audio_options cot=...
+            // below still wins, so off/full stay reachable for short lyrics.
+            audiocpp_request_set_option(request, "cot", "melody") != AUDIOCPP_OK ||
             audiocpp_request_set_option(request, "seed", seed) != AUDIOCPP_OK ||
             // Cap the semantic stream (~12.5 tokens/s audio) so the VAE decode
             // buffer stays inside the ps5pro graph arena; uncapped runs emit
