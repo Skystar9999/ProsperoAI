@@ -916,10 +916,10 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
                                      "Invalid Content-Length.");
                         return 0;
                     }
-                    if (content_length > capacity / 10)
+                    if (content_length > 256u * 1024 * 1024)
                     {
                         openai_error(api, sock, "413 Payload Too Large", "request_too_large",
-                                     "Request limit is 256 KiB including headers.");
+                                     "Request limit is 256 KiB (uploads: 64 MiB) including headers.");
                         return 0;
                     }
                     content_length = content_length * 10 + (c - '0');
