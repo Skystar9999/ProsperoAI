@@ -243,7 +243,8 @@
     var dlWav = document.createElement('a'); dlWav.href = url; dlWav.download = filename; dlWav.textContent = '⬇ Download WAV'; dlWav.style.display = isMp3Source ? 'none' : '';
     var dlMp3 = document.createElement('button'); dlMp3.type = 'button'; dlMp3.textContent = isMp3Source ? '⬇ Download MP3' : '⬇ Download MP3 (320k, converts in browser)';
     var coverBtn = document.createElement('button'); coverBtn.type = 'button';
-    if (meta) {
+    var hasMeta = meta && Object.keys(meta).length > 0;
+    if (hasMeta) {
       coverBtn.textContent = '🎤 Cover — load lyrics/style/seed';
       coverBtn.addEventListener('click', function (e) {
         e.stopPropagation(); menu.style.display = 'none';
