@@ -13,15 +13,18 @@ function pct(p) { postMessage({ pct: Math.max(0, Math.min(100, Math.round(p * 10
 function fail(e) { postMessage({ error: String(e && e.message ? e.message : e) }); }
 
 function loadScript(path) {
-  // CSP forbids eval; importScripts is the worker-native, eval-free loader.
-  // Same-origin (BASE is prefixed with the page origin) passes script-src 'self'.
-  try {
-    importScripts(BASE + '/' + path);
-  } catch (e) {
-    throw new Error('script load failed: ' + path + ': ' + (e && e.message ? e.message : e));
-  }
-  // ort.min.js declares `var ort` at top level → lands on the worker global.
-  return Promise.resolve(self.ort);
+  // CSP forbids eval; importScripts enforces JS MIME (the media handler serves
+  // octet-stream). fetch-as-text + blob: URL + dynamic import works under
+  // CSP script-src blob: with any server MIME.
+  return fetch(BASE + '/' + path).then(function (r) {
+    if (!r.ok) throw new Error('fetch ' + path + ': HTTP ' + r.status);
+    return r.text();
+  }).then(function (code) {
+    // Module-scope import: a classic bundle's top-level `var` would not leak —
+    // export it explicitly so loadScript resolves to the bundle's value.
+    var wrapped = code + '\n;export default (typeof ort !== "undefined" ? ort : undefined);';
+    return import(URL.createObjectURL(new Blob([wrapped], { type: 'text/javascript' })));
+  });
 }
 
 // PCM16 WAV reader (our library files are always PCM16; fallback via decoder).
@@ -70,7 +73,7 @@ async function run(msg) {
   if (!self.StemEngine) throw new Error('stem engine failed to load');
   stage('Loading ONNX runtime...');
   var ortMod = await loadScript('ort.min.js');
-  if (ortMod) self.ort = ortMod;
+  if (ortMod) self.ort = ortMod.default || ortMod;
   if (!self.ort) throw new Error('onnxruntime failed to load');
   if (self.ort.env.wasm) self.ort.env.wasm.proxy = false;
 
