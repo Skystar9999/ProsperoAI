@@ -972,14 +972,15 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
             return 0;
         }
         std::size_t written = total > body_start ? total - body_start : 0;
+        bool ok = true;
         if (written && std::fwrite(buffer + body_start, 1, written, file) != written)
-            written = 0;
+            ok = false;
         std::vector<char> chunk(65536);
-        // Accepted sockets behave non-blockingly here: an empty kernel buffer
-        // shows up as recv <= 0, NOT as a dead peer. Retry patiently; only a
-        // 5 s gap without a single byte counts as an interrupted upload.
+        // The body may lag the headers by a packet and the accepted socket may
+        // answer recv <= 0 on an empty buffer — retry patiently; only a 5 s
+        // gap without a single byte counts as an interrupted upload.
         int idle_polls = 0;
-        while (written && written < content_length)
+        while (ok && written < content_length)
         {
             const int received =
                 api.recv(sock, chunk.data(),
@@ -989,7 +990,7 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
             {
                 if (++idle_polls > 100)
                 {
-                    written = 0;
+                    ok = false;
                     break;
                 }
                 ::usleep(50000);
@@ -999,13 +1000,13 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
             if (std::fwrite(chunk.data(), 1, static_cast<std::size_t>(received), file) !=
                 static_cast<std::size_t>(received))
             {
-                written = 0;
+                ok = false;
                 break;
             }
             written += static_cast<std::size_t>(received);
         }
         std::fclose(file);
-        if (!written)
+        if (!ok || written != content_length)
         {
             std::remove(path.c_str());
             openai_error(api, sock, "500 Internal Server Error", "upload_write_failed",
