@@ -2608,8 +2608,8 @@ void handle_connection(const NetApi &api, int sock)
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/music/files") == 0)
         handle_music_files(api, sock);
     else if (std::strcmp(method, "GET") == 0 &&
-             std::strncmp(path, "/api/music/stems.zip?track=", 25) == 0)
-        handle_music_stems_zip(api, sock, path + 25);
+             std::strncmp(path, "/api/music/stems.zip?track=", 27) == 0)
+        handle_music_stems_zip(api, sock, path + 27);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/abc") == 0)
         handle_music_abc(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/meta") == 0)
