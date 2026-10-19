@@ -156,6 +156,20 @@ def include_demucs_dependencies(path: Path) -> None:
     path.write_text(source.replace(anchor, anchor + line, 1))
 
 
+def adapt_fast_projection_pack4(source: Path, ggml_source: Path) -> None:
+    """The pinned ggml predates ggml_mul_mat_pack4. The module itself refuses
+    non-CUDA/HIP backends at build(), so on the PS5 only the symbols need to
+    link — route the call to plain ggml_mul_mat when the API is absent."""
+    if ggml_has_api(ggml_source, "ggml_mul_mat_pack4"):
+        return
+    replace_once(
+        source / "src/framework/modules/optimizations/fast_projection_modules.cpp",
+        "        ggml_mul_mat_pack4(ctx.ggml, weights.weight.tensor, matrix_input.tensor);",
+        "        ggml_mul_mat(ctx.ggml, weights.weight.tensor, matrix_input.tensor);"
+        " // PS5: pinned ggml predates pack4; build() is CUDA/HIP-only anyway",
+    )
+
+
 def reuse_parent_ggml(path: Path) -> None:
     """Reuse the parent runtime's upstream GGML target when added as a subproject."""
     replace_once(
@@ -451,6 +465,7 @@ def main() -> None:
     reuse_parent_ggml(cmake)
     if not ggml_has_api(ggml_source, "ggml_round_bf16"):
         adapt_ace_step_ggml_round(source)
+    adapt_fast_projection_pack4(source, ggml_source)
     adapt_ace_step_staged_memory(source)
     adapt_chatterbox_s3_tokenizer_arena(source)
     replace_once(
