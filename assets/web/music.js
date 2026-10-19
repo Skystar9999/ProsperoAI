@@ -162,6 +162,12 @@
       done(blob.size);
     }).catch(fail);
   }
+  // ---- shared volume (persisted, applied to every player live) ----
+  function getStoredVol() {
+    var v = parseInt(localStorage.getItem('prospero-vol'), 10);
+    return isNaN(v) ? 80 : Math.max(0, Math.min(100, v));
+  }
+
   // ---- Cover: reload a track's saved generation settings into the form ----
   function applyCover(meta, filename) {
     if (meta.lyrics !== undefined) $('lyrics').value = meta.lyrics;
@@ -238,6 +244,9 @@
     var row = document.createElement('div'); row.className = 'pl-row';
     var play = document.createElement('button'); play.type = 'button'; play.className = 'pl-play'; play.textContent = '▶';
     var tm = document.createElement('span'); tm.className = 'pl-time'; tm.textContent = '0:00 / --:--';
+    var vol = document.createElement('input'); vol.type = 'range'; vol.className = 'pl-vol';
+    vol.min = '0'; vol.max = '100'; vol.step = '1'; vol.value = String(getStoredVol()); vol.title = 'Volume';
+    audio.volume = getStoredVol() / 100;
     var menuBtn = document.createElement('button'); menuBtn.type = 'button'; menuBtn.className = 'pl-menu'; menuBtn.textContent = '⋮'; menuBtn.title = 'More actions';
     var menu = document.createElement('div'); menu.className = 'pl-menu-box'; menu.style.display = 'none';
     var dlWav = document.createElement('a'); dlWav.href = url; dlWav.download = filename; dlWav.textContent = '⬇ Download WAV'; dlWav.style.display = isMp3Source ? 'none' : '';
@@ -257,7 +266,12 @@
     var masterBtn = document.createElement('button'); masterBtn.type = 'button';
     masterBtn.textContent = '🎚 Master (normalize + limiter)';
     menu.appendChild(dlWav); menu.appendChild(dlMp3); menu.appendChild(coverBtn); menu.appendChild(masterBtn);
-    row.appendChild(play); row.appendChild(tm); row.appendChild(menuBtn); row.appendChild(menu);
+    row.appendChild(play); row.appendChild(tm); row.appendChild(vol); row.appendChild(menuBtn); row.appendChild(menu);
+    vol.addEventListener('input', function () {
+      try { localStorage.setItem('prospero-vol', vol.value); } catch (e) {}
+      document.dispatchEvent(new CustomEvent('music-vol', { detail: parseInt(vol.value, 10) }));
+    });
+    document.addEventListener('music-vol', function (e) { audio.volume = e.detail / 100; });
     var seek = document.createElement('input'); seek.type = 'range'; seek.className = 'pl-seek'; seek.min = '0'; seek.max = '1000'; seek.value = '0';
     wrap.appendChild(row); wrap.appendChild(seek);
     var dragging = false;
@@ -340,6 +354,25 @@
         s.textContent = fmtSize(f.size) + ' · ' + fmtDate(f.mtime);
         m.appendChild(n); m.appendChild(s);
         d.appendChild(m);
+        // settings card: how this track was made (v28 sidecar meta)
+        if (f.meta && Object.keys(f.meta).length) {
+          var det = document.createElement('details'); det.className = 'track-settings';
+          var sum = document.createElement('summary');
+          var bits = [];
+          if (f.meta.style) bits.push(f.meta.style);
+          if (f.meta.seed !== undefined) bits.push('seed ' + f.meta.seed);
+          if (f.meta.duration !== undefined) bits.push(f.meta.duration + 's');
+          if (f.meta.cot) bits.push('cot=' + f.meta.cot);
+          if (f.meta.abc_name) bits.push('ABC: ' + f.meta.abc_name);
+          sum.textContent = '\u2699 ' + (bits.join(' \u00b7 ') || 'saved settings');
+          det.appendChild(sum);
+          if (f.meta.lyrics) {
+            var pre = document.createElement('pre'); pre.className = 'track-lyrics';
+            pre.textContent = f.meta.lyrics;
+            det.appendChild(pre);
+          }
+          d.appendChild(det);
+        }
         if (/\.(wav|mp3)$/i.test(f.name)) {
           d.appendChild(makePlayer(AUDIO_DIR + encodeURIComponent(f.name), f.name, /\.mp3$/i.test(f.name), f.meta));
         } else {
