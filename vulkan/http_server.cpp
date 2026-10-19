@@ -975,15 +975,29 @@ std::size_t read_request(const NetApi &api, int sock, char *buffer, std::size_t 
         if (written && std::fwrite(buffer + body_start, 1, written, file) != written)
             written = 0;
         std::vector<char> chunk(65536);
+        // Accepted sockets behave non-blockingly here: an empty kernel buffer
+        // shows up as recv <= 0, NOT as a dead peer. Retry patiently; only a
+        // 5 s gap without a single byte counts as an interrupted upload.
+        int idle_polls = 0;
         while (written && written < content_length)
         {
             const int received =
                 api.recv(sock, chunk.data(),
                          static_cast<std::size_t>(
                              std::min<std::size_t>(chunk.size(), content_length - written)), 0);
-            if (received <= 0 ||
-                std::fwrite(chunk.data(), 1, static_cast<std::size_t>(received), file) !=
-                    static_cast<std::size_t>(received))
+            if (received <= 0)
+            {
+                if (++idle_polls > 100)
+                {
+                    written = 0;
+                    break;
+                }
+                ::usleep(50000);
+                continue;
+            }
+            idle_polls = 0;
+            if (std::fwrite(chunk.data(), 1, static_cast<std::size_t>(received), file) !=
+                static_cast<std::size_t>(received))
             {
                 written = 0;
                 break;
