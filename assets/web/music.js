@@ -834,28 +834,43 @@
     });
   }
   // full title cycle from the browser: self-exit (same-origin), mount (:10101)
-  // and launch (:8080) both send Access-Control-Allow-Origin: *
+  // and launch (:8080) both send Access-Control-Allow-Origin: *.
+  // mount can answer 409 "Device busy" while the dying title is still
+  // unmounting and launch answers 503 when the device isn't ready — so the
+  // pair is retried every 30s until the server is actually back.
   function restartTitle() {
     var host = location.hostname;
     setStatus('Restarting title: self-exit…', 'busy');
+    var cycle = function () {
+      return fetch('http://' + host + ':10101/api/v1/games/mount', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title_id: TITLE_ID })
+      }).catch(function () { /* busy is fine, we retry */ })
+        .then(function () { return qdelay(1500); })
+        .then(function () {
+          // no-cors: websrv :8080 answers ACAO:* but NOT Private-Network
+          // preflight — a CORS fetch from a LAN page never reaches it.
+          // Opaque fire-and-forget is all launch needs.
+          return fetch('http://' + host + ':8080/launch?titleId=' + TITLE_ID, { mode: 'no-cors' })
+            .catch(function () { /* 503 can still launch */ });
+        })
+        .then(function () { return waitUp(30000); });
+    };
     return api('/api/system/restart', {}, 8000).catch(function () { /* bye */ })
       .then(function () { return qdelay(4000); })
       .then(function () {
-        setStatus('Restarting title: remounting…', 'busy');
-        return fetch('http://' + host + ':10101/api/v1/games/mount', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title_id: TITLE_ID })
-        }).catch(function () { /* busy/already-mounted is fine */ });
-      })
-      .then(function () { return qdelay(1500); })
-      .then(function () {
-        setStatus('Restarting title: launching…', 'busy');
-        return fetch('http://' + host + ':8080/launch?titleId=' + TITLE_ID)
-          .catch(function () { /* 503 can still launch */ });
-      })
-      .then(function () {
-        setStatus('Waiting for the console server to come back (≈15-60s)…', 'busy');
-        return waitUp(300000);
+        setStatus('Restarting title: mount + launch (retrying until the server is back)…', 'busy');
+        var tries = 0;
+        return new Promise(function (res, rej) {
+          (function attempt() {
+            tries++;
+            cycle().then(res, function (e) {
+              if (tries >= 8) return rej(new Error('title did not come back after ' + tries + ' launch attempts'));
+              setStatus('Title still down — retrying mount+launch (' + tries + ')…', 'busy');
+              attempt();
+            });
+          })();
+        });
       })
       .then(function () { loadModels(); });
   }
