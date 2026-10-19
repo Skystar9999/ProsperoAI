@@ -13,14 +13,15 @@ function pct(p) { postMessage({ pct: Math.max(0, Math.min(100, Math.round(p * 10
 function fail(e) { postMessage({ error: String(e && e.message ? e.message : e) }); }
 
 function loadScript(path) {
-  return fetch(BASE + '/' + path).then(function (r) {
-    if (!r.ok) throw new Error('fetch ' + path + ': HTTP ' + r.status);
-    return r.text();
-  }).then(function (code) {
-    // 'use strict'-leading bundles (ort) don't leak `var` to global under eval —
-    // append an expression so the completion value IS the bundle's top-level var.
-    return (0, eval)(code + '\n;typeof ort !== "undefined" ? ort : undefined;');
-  });
+  // CSP forbids eval; importScripts is the worker-native, eval-free loader.
+  // Same-origin (BASE is prefixed with the page origin) passes script-src 'self'.
+  try {
+    importScripts(BASE + '/' + path);
+  } catch (e) {
+    throw new Error('script load failed: ' + path + ': ' + (e && e.message ? e.message : e));
+  }
+  // ort.min.js declares `var ort` at top level → lands on the worker global.
+  return Promise.resolve(self.ort);
 }
 
 // PCM16 WAV reader (our library files are always PCM16; fallback via decoder).

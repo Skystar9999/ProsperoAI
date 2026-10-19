@@ -446,7 +446,8 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
                       "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
                       "X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\n"
                       "Content-Security-Policy: default-src 'self'; style-src 'self'; script-src "
-                      "'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; "
+                      "'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob:; "
+                      "font-src 'self'; img-src 'self' data: blob:; "
                       "media-src 'self' blob:; frame-ancestors 'none'\r\nConnection: "
                       "close\r\n\r\n",
                       asset.type, size);
