@@ -441,10 +441,12 @@ bool serve_ui_asset(const NetApi &api, int sock, const char *path)
                         "UI asset unavailable");
             return true;
         }
-        char header[512];
+        char header[640];
         std::snprintf(header, sizeof(header),
                       "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
                       "X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\n"
+                      "Cross-Origin-Opener-Policy: same-origin\r\n"
+                      "Cross-Origin-Embedder-Policy: require-corp\r\n"
                       "Content-Security-Policy: default-src 'self'; style-src 'self'; script-src "
                       "'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob:; "
                       "font-src 'self'; img-src 'self' data: blob:; "
