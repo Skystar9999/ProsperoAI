@@ -528,5 +528,35 @@
     loadModels(); loadSettings(); loadLibrary(); loadAbcSelect();
   });
 
-  loadModels(); loadSettings(); loadLibrary(); loadAbcSelect();
+  // ---- form persistence (survives refresh; lyrics/style/abc/opts all kept) ----
+  var FORM_KEY = 'prospero-music-form-v1';
+  var FORM_IDS = ['lyrics', 'style', 'abc', 'abc-name', 'cot', 'abc-max', 'duration', 'seed', 'track-name'];
+  function restoreForm() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(FORM_KEY) || '{}');
+      FORM_IDS.forEach(function (id) {
+        var el = $(id);
+        if (el && saved[id] !== undefined && saved[id] !== null) el.value = saved[id];
+      });
+      $('dur-val').textContent = $('duration').value;
+    } catch (e) {}
+  }
+  var formSaveT = 0;
+  function formSaveNow() {
+    var o = {};
+    FORM_IDS.forEach(function (id) { var el = $(id); if (el) o[id] = el.value; });
+    try { localStorage.setItem(FORM_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  FORM_IDS.forEach(function (id) {
+    var el = $(id);
+    if (!el) return;
+    el.addEventListener('input', function () {
+      clearTimeout(formSaveT); formSaveT = setTimeout(formSaveNow, 300);
+    });
+  });
+
+  loadModels(); loadLibrary(); loadAbcSelect();
+  // Restore AFTER server settings land so the user's last (possibly unsaved)
+  // edits win over the server-persisted snapshot.
+  loadSettings().then(restoreForm);
 })();
