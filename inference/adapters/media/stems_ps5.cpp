@@ -433,6 +433,52 @@ extern "C" int ps5_stems_separate(const char *root, const char *prompt, char *re
                           samples.size() / 2u, sample_rate);
             stage_log(line);
         }
+        // HTDemucs is trained at 44.1 kHz and prepare() rejects anything else.
+        // Band-limited Hann-windowed sinc (16 taps) — 48k material must not be
+        // naive-truncated; aliasing here would be audible in every stem.
+        if (sample_rate != 44100)
+        {
+            const std::size_t frames = samples.size() / 2u;
+            const double ratio = 44100.0 / static_cast<double>(sample_rate);
+            const std::size_t out_frames =
+                std::max<std::size_t>(1u, static_cast<std::size_t>(frames * ratio));
+            std::vector<float> resampled(out_frames * 2u, 0.0f);
+            constexpr int kTaps = 16;
+            const double pi = 3.14159265358979323846;
+            const double cutoff = ratio < 1.0 ? ratio : 1.0;
+            for (std::size_t i = 0; i < out_frames; ++i)
+            {
+                const double src = (static_cast<double>(i) + 0.5) / ratio - 0.5;
+                const long center = static_cast<long>(std::floor(src + 0.5));
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    double acc = 0.0, norm = 0.0;
+                    for (int t = 0; t < kTaps; ++t)
+                    {
+                        const long idx = center - (kTaps / 2 - 1) + t;
+                        const double x = src - static_cast<double>(idx);
+                        if (idx < 0 || static_cast<std::size_t>(idx) >= frames ||
+                            std::fabs(x) > kTaps / 2.0)
+                            continue;
+                        const double cx = pi * cutoff * x;
+                        const double sinc =
+                            std::fabs(cx) < 1e-9 ? cutoff : std::sin(cx) / cx * cutoff;
+                        const double w = 0.5 + 0.5 * std::cos(pi * x / (kTaps / 2.0));
+                        acc += static_cast<double>(samples[static_cast<std::size_t>(idx) * 2u +
+                                                           static_cast<std::size_t>(ch)]) *
+                               sinc * w;
+                        norm += sinc * w;
+                    }
+                    resampled[i * 2u + static_cast<std::size_t>(ch)] =
+                        norm != 0.0 ? static_cast<float>(acc / norm) : 0.0f;
+                }
+            }
+            samples.swap(resampled);
+            sample_rate = 44100;
+            char line[96];
+            std::snprintf(line, sizeof(line), "resampled %zu frames to 44100 Hz", frames);
+            stage_log(line);
+        }
         if (!ensure_engine(std::string(root), cfg.weight_type, cfg.backend, cfg.engine_options,
                            progress))
         {
