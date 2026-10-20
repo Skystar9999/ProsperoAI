@@ -1214,7 +1214,7 @@
   // Enhance rescrie draft-ul cu chat-modelul local (MiniCPM5) folosind
   // prompt-urile de sistem exacte din mlx-serve (varianta yue2). Templates
   // = catalog built-in (exemplele mlx-serve) + salvare localStorage.
-  var CHAT_MODEL = 'MiniCPM5-2B-Q8_0.gguf';
+  var CHAT_MODEL = 'Ternary-Bonsai-2-27B-PTQ1_0.gguf';
   var ENH_STYLE_SYS = 'You rewrite music style prompts for a text-to-music model. ' +
     'Write ONE line of comma-separated tags like the examples: language or genre first, ' +
     'then instruments, mood and the lead vocal. No sentences, no tempo or key (the score ' +
@@ -1225,7 +1225,7 @@
     'Example 2 \u2014 Jazz-funk:\nJazz-funk, warm lead vocal, Rhodes piano, electric bass, tight drums\n\n' +
     'Example 3 \u2014 Jazz ballad:\nJazz, expressive lead vocal, piano, tenor saxophone, upright bass, brushed drums, no guitar, spacious modern harmony\n\n' +
     'Example 4 \u2014 Indie pop:\nEnglish, indie pop, bright acoustic guitar, soft drums, warm lead vocal';
-  var ENH_LYRICS_SYS = 'You write song lyrics for a text-to-music model. Use section tags ' +
+  var ENH_LYRICS_SYS = 'You write song lyrics for a text-to-music model. Always write in the SAME language as the user\'s draft. Use section tags ' +
     'on their own lines, exactly like the examples: [Intro] [Verse] [Pre-Chorus] [Chorus] ' +
     '[Interlude] [Bridge] [Outro]. Keep the user\'s theme and any lines they wrote; tighten ' +
     'rhythm and rhyme. Reply with ONLY the lyrics, no title, no preamble, no quotes, no ' +
@@ -1301,7 +1301,7 @@
     }
     api('/api/chat', { model: CHAT_MODEL, messages: [
       { role: 'system', content: sys }, { role: 'user', content: user }
-    ], num_predict: predict }, 240000).then(function (j) {
+    ], num_predict: predict, temperature: 0.2 }, 240000).then(function (j) {
       var out = stripWrap(j && j.message ? j.message.content : '');
       if (j && j.error && !out) throw new Error(String(j.error).slice(0, 120));
       if (!out) throw new Error('empty rewrite, try again');
