@@ -563,7 +563,7 @@ static int jobs_thread_create(void **thread, void *(*entry)(void *), void *arg,
     pthread_attr_t attributes;
     if (pthread_attr_init(&attributes) != 0)
 #ifdef __linux__
-        return pthread_create(static_cast<pthread_t *>(thread), nullptr, entry, arg);
+        return pthread_create(reinterpret_cast<pthread_t *>(thread), nullptr, entry, arg);
 #else
         return scePthreadCreate(thread, nullptr, entry, arg, name);
 #endif
@@ -571,7 +571,7 @@ static int jobs_thread_create(void **thread, void *(*entry)(void *), void *arg,
 #ifdef __linux__
     (void)name;
     const int spawned =
-        pthread_create(static_cast<pthread_t *>(thread), configured == 0 ? &attributes : nullptr,
+        pthread_create(reinterpret_cast<pthread_t *>(thread), configured == 0 ? &attributes : nullptr,
                        entry, arg);
 #else
     const int spawned = configured == 0 ? scePthreadCreate(thread, &attributes, entry, arg, name)
@@ -585,7 +585,7 @@ static int jobs_thread_join(void *thread)
 {
     void *retval = nullptr;
 #ifdef __linux__
-    return pthread_join(static_cast<pthread_t>(thread), &retval);
+    return pthread_join(reinterpret_cast<pthread_t>(thread), &retval);
 #else
     return scePthreadJoin(thread, &retval);
 #endif
