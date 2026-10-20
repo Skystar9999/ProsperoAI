@@ -52,6 +52,7 @@
   // would have returned (j.response / j.error).
   function generateAndWait(model, prompt, maxMs) {
     var deadline = Date.now() + (maxMs || 2700000);
+    var startedAt = Date.now();
     return api('/api/generate', { model: model, prompt: prompt, async: true }, 30000)
       .then(function (j) {
         if (!j.job_id) throw new Error('server has no async jobs (old build?)');
@@ -63,6 +64,8 @@
                 if (Date.now() > deadline)
                   throw new Error('job ' + j.job_id + ' still running after ' +
                     Math.round((maxMs || 2700000) / 60000) + ' min');
+                setStatus('Generating — ' + Math.round((Date.now() - startedAt) / 1000) +
+                  's elapsed; the job finishes even if you close this page.', 'busy');
                 return sleep(5000).then(poll);
               }
               if (!s || !s.result) return { error: 'job ' + j.job_id + ' vanished' };
@@ -70,7 +73,14 @@
             })
             .catch(function (e) {
               // a dropped poll is not a failure: retry until the deadline
-              if (e && /vanished|old build|still running/.test(e.message)) throw e;
+              if (e && /vanished|old build|still running|job lost/.test(e.message)) throw e;
+              // 404 = the server no longer knows this id: the app restarted
+              // mid-generation (crash or NEEDS_RESTART death). Retrying is
+              // pointless — say so instead of spinning for 45 minutes (20.10,
+              // user saw ">600s" on a job that had died with the app).
+              if (e && /404|no such job/.test(e.message))
+                throw new Error('job lost: the app restarted mid-generation. ' +
+                  'Retry now — if RAM was fragmented the restart cleaned it.');
               if (Date.now() > deadline) throw e;
               return sleep(8000).then(poll);
             });
