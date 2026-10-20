@@ -41,6 +41,17 @@ replace(loader,
         1 * 1024 * 1024;
 #endif''')
 
+# Fragmentation hunt (20.10): log every >=64 MiB device allocation so a YuE2
+# run names its biggest contiguous demand; the gate threshold can then match
+# the real requirement instead of a guess.
+buffers = ggml_source / 'src/ggml-vulkan/ggml-vulkan-buffers.cpp'
+replace(buffers,
+        '    vk::MemoryRequirements mem_req = device->device.getBufferMemoryRequirements(buf->buffer);',
+        '''    vk::MemoryRequirements mem_req = device->device.getBufferMemoryRequirements(buf->buffer);
+    if (mem_req.size >= (64ull << 20))
+        GGML_LOG_INFO("ps5 vkalloc: %llu MiB (import=%d)\\n",
+                      (unsigned long long)(mem_req.size >> 20), int(import_ptr != nullptr));''')
+
 # PS5 titles do not expose libc's stderr in klog. Route each timestamp result
 # through ggml's registered log callback so profiling remains observable.
 vulkan = ggml_source / 'src/ggml-vulkan/ggml-vulkan.cpp'
