@@ -555,6 +555,42 @@ unsigned request_option(const char *body, const char *key, unsigned fallback, un
     return static_cast<unsigned>(std::min<long>(parsed, maximum));
 }
 
+// The host regression harness compiles this file on Linux where the sce*
+// kernel exports do not exist; the job helpers map to plain pthreads there.
+static int jobs_thread_create(void **thread, void *(*entry)(void *), void *arg,
+                              const char *name, unsigned long stack_size)
+{
+    pthread_attr_t attributes;
+    if (pthread_attr_init(&attributes) != 0)
+#ifdef __linux__
+        return pthread_create(static_cast<pthread_t *>(thread), nullptr, entry, arg);
+#else
+        return scePthreadCreate(thread, nullptr, entry, arg, name);
+#endif
+    const int configured = pthread_attr_setstacksize(&attributes, stack_size);
+#ifdef __linux__
+    (void)name;
+    const int spawned =
+        pthread_create(static_cast<pthread_t *>(thread), configured == 0 ? &attributes : nullptr,
+                       entry, arg);
+#else
+    const int spawned = configured == 0 ? scePthreadCreate(thread, &attributes, entry, arg, name)
+                                        : scePthreadCreate(thread, nullptr, entry, arg, name);
+#endif
+    pthread_attr_destroy(&attributes);
+    return spawned;
+}
+
+static int jobs_thread_join(void *thread)
+{
+    void *retval = nullptr;
+#ifdef __linux__
+    return pthread_join(static_cast<pthread_t>(thread), &retval);
+#else
+    return scePthreadJoin(thread, &retval);
+#endif
+}
+
 // ---- Async generate jobs -----------------------------------------------------
 // A synchronous generation holds one HTTP connection open for up to six
 // minutes; phone browsers drop such connections routinely (screen off,
@@ -658,8 +694,7 @@ void handle_jobs_get(const NetApi &api, int sock, unsigned id)
         // connection workers: join only, never detach.
         if (up->state != 0 && up->thread != nullptr)
         {
-            void *retval = nullptr;
-            scePthreadJoin(up->thread, &retval);
+            jobs_thread_join(up->thread);
             up->thread = nullptr;
         }
         const unsigned long long elapsed =
@@ -685,8 +720,7 @@ void handle_jobs_list(const NetApi &api, int sock)
     {
         if (up->state != 0 && up->thread != nullptr)
         {
-            void *retval = nullptr;
-            scePthreadJoin(up->thread, &retval);
+            jobs_thread_join(up->thread);
             up->thread = nullptr;
         }
         const unsigned long long elapsed = (jobs_now_ms() - up->started_ms) / 1000ull;
@@ -730,15 +764,8 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
                 }
             }
         }
-        pthread_attr_t attributes;
-        bool attr_ok = pthread_attr_init(&attributes) == 0;
-        if (attr_ok)
-            attr_ok = pthread_attr_setstacksize(&attributes, 8 * 1024 * 1024) == 0;
-        const int spawned = attr_ok ? scePthreadCreate(&thread, &attributes, generate_job_worker,
-                                                       raw, "prosperoai-job")
-                                    : -1;
-        if (attr_ok)
-            pthread_attr_destroy(&attributes);
+        const int spawned = jobs_thread_create(&thread, generate_job_worker, raw,
+                                               "prosperoai-job", 8u * 1024u * 1024u);
         std::lock_guard<std::mutex> lock(jobs_mutex);
         if (spawned != 0)
         {
