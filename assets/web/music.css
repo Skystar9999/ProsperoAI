@@ -87,3 +87,8 @@ h2 button{padding:3px 9px;font-size:13px}
 .track-lyrics{white-space:pre-wrap;font-size:11px;color:var(--dim);margin:6px 0 0;max-height:180px;overflow:auto;font-family:inherit}
 
 #abc-status{font-size:12.5px;margin:4px 2px;color:#e8b339}#abc-status[data-cls="ok"]{color:#3fb950}#abc-status[data-cls="err"]{color:#f85149}
+
+.enh-row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+.enh-row button{padding:6px 10px;font-size:12px}
+.enh-status{font-size:12px;opacity:.7}
+.enh-row select{font-size:12px}

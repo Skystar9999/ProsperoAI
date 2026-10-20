@@ -1209,6 +1209,173 @@
   });
   qload(); renderQueue();
 
+
+  // ---- Enhance + Templates (ported from MLX Serve's rewrite flow) ----
+  // Enhance rescrie draft-ul cu chat-modelul local (MiniCPM5) folosind
+  // prompt-urile de sistem exacte din mlx-serve (varianta yue2). Templates
+  // = catalog built-in (exemplele mlx-serve) + salvare localStorage.
+  var CHAT_MODEL = 'MiniCPM5-2B-Q8_0.gguf';
+  var ENH_STYLE_SYS = 'You rewrite music style prompts for a text-to-music model. ' +
+    'Write ONE line of comma-separated tags like the examples: language or genre first, ' +
+    'then instruments, mood and the lead vocal. No sentences, no tempo or key (the score ' +
+    'carries those). Keep the user\'s intent; make it more specific and evocative. Reply ' +
+    'with ONLY the rewritten prompt, no preamble, no quotes, no markdown.\n\n' +
+    'Examples of the expected format:\n\n' +
+    'Example 1 \u2014 City pop:\nCity Pop, upbeat, danceable, groovy bass, electric guitar, synth, energetic, joyful, neon city night\n\n' +
+    'Example 2 \u2014 Jazz-funk:\nJazz-funk, warm lead vocal, Rhodes piano, electric bass, tight drums\n\n' +
+    'Example 3 \u2014 Jazz ballad:\nJazz, expressive lead vocal, piano, tenor saxophone, upright bass, brushed drums, no guitar, spacious modern harmony\n\n' +
+    'Example 4 \u2014 Indie pop:\nEnglish, indie pop, bright acoustic guitar, soft drums, warm lead vocal';
+  var ENH_LYRICS_SYS = 'You write song lyrics for a text-to-music model. Use section tags ' +
+    'on their own lines, exactly like the examples: [Intro] [Verse] [Pre-Chorus] [Chorus] ' +
+    '[Interlude] [Bridge] [Outro]. Keep the user\'s theme and any lines they wrote; tighten ' +
+    'rhythm and rhyme. Reply with ONLY the lyrics, no title, no preamble, no quotes, no ' +
+    'markdown.\n\nExamples of the expected format:\n\n' +
+    'Example 1 \u2014 Short song (English):\n[Intro]\n\n[Verse]\nSoft morning light is touching the window\n' +
+    'Coffee on the table and the radio low\nI hear your footsteps coming down the hall\n' +
+    'Every little moment feels like it is all\n\n[Chorus]\nStay with the rhythm, let it carry us home\n' +
+    'We are not alone, we are not alone\nSing it to the sky and it will sing right back\n' +
+    'Stay with the rhythm, never look back\n\n[Outro]\nStay with the rhythm, let it carry us home';
+  var TPL_BUILTIN = {
+    style: [
+      { title: 'City pop', body: 'City Pop, upbeat, danceable, groovy bass, electric guitar, synth, energetic, joyful, neon city night' },
+      { title: 'Jazz-funk', body: 'Jazz-funk, warm lead vocal, Rhodes piano, electric bass, tight drums' },
+      { title: 'Jazz ballad', body: 'Jazz, expressive lead vocal, piano, tenor saxophone, upright bass, brushed drums, no guitar, spacious modern harmony' },
+      { title: 'Indie pop', body: 'English, indie pop, bright acoustic guitar, soft drums, warm lead vocal' },
+      { title: 'Romanian pop', body: 'Romanian pop, warm female vocal, synth pads, deep bass, tight drums, sunny summer mood' },
+      { title: 'Manele modern', body: 'Romanian manele, oriental scales, accordion, synth brass, emotional male vocal, deep bass' },
+      { title: 'Rock', body: 'Romanian rock, energetic electric guitar, driving drums, gritty male vocal, anthemic chorus' }
+    ],
+    lyrics: [
+      { title: 'Song skeleton', body: '[Intro]\n\n[Verse]\n\n\n[Chorus]\n\n\n[Verse]\n\n\n[Chorus]\n\n\n[Bridge]\n\n\n[Outro]\n' }
+    ]
+  };
+  var TPL_KEY = { style: 'prospero-tpl-style', lyrics: 'prospero-tpl-lyrics' };
+  function tplLoad(field) {
+    try { return JSON.parse(localStorage.getItem(TPL_KEY[field]) || '[]'); } catch (e) { return []; }
+  }
+  function tplSave(field, list) {
+    try { localStorage.setItem(TPL_KEY[field], JSON.stringify(list)); } catch (e) {}
+  }
+  function enhRow(field) {
+    var anchor = $(field);
+    var row = document.createElement('div');
+    row.className = 'enh-row';
+    row.innerHTML = '<button id="enh-' + field + '" type="button">\u2728 Enhance</button>' +
+      '<button id="tpl-' + field + '" type="button" title="templates">\uD83D\uDCDA Templates</button>' +
+      '<select id="tplmenu-' + field + '" hidden title="pick a template"></select>' +
+      '<span id="enh-' + field + '-status" class="enh-status"></span>';
+    anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    return row;
+  }
+  function enhStatus(field, msg, busy) {
+    var el = $('enh-' + field + '-status');
+    el.textContent = msg || '';
+    el.style.opacity = busy ? '.9' : '.7';
+  }
+  function stripWrap(s) {
+    return String(s || '').replace(/^\s*```[a-z]*\s*|\s*```\s*$/g, '')
+      .replace(/^["'\u201e\u201c]+|["'\u201d]+$/g, '').trim();
+  }
+  function enhance(field) {
+    var el = $(field), draft = el.value.trim();
+    if (!draft) { enhStatus(field, 'Write something first.'); return; }
+    var btn = $('enh-' + field), tplBtn = $('tpl-' + field);
+    btn.disabled = tplBtn.disabled = true;
+    enhStatus(field, 'Rewriting with ' + CHAT_MODEL + ' (first call may load the chat model, ~1 min)\u2026', true);
+    var sys, user, predict;
+    if (field === 'style') {
+      sys = ENH_STYLE_SYS;
+      user = 'Rewrite this style prompt:\n\n' + draft;
+      var lyr = $('lyrics').value.trim();
+      user += lyr ? '\n\nIt will sing these lyrics (for mood and language):\n' + lyr
+                  : '\n\nThe track is instrumental: no vocals.';
+      predict = 150;
+    } else {
+      sys = ENH_LYRICS_SYS;
+      var st = $('style').value.trim();
+      var lang = /[\u021b\u0219\u0222\u0218\u0227\u0103\u00ee]/i.test(draft) || /romanian|rom\u00e2n/i.test(st + ' ' + draft)
+        ? 'Romanian' : 'the same language they are written in';
+      user = 'Rewrite these lyrics in ' + lang + ':\n\n' + draft;
+      if (st) user += '\n\nThe music style is:\n' + st;
+      predict = 900;
+    }
+    api('/api/chat', { model: CHAT_MODEL, messages: [
+      { role: 'system', content: sys }, { role: 'user', content: user }
+    ], num_predict: predict }, 240000).then(function (j) {
+      var out = stripWrap(j && j.message ? j.message.content : '');
+      if (j && j.error && !out) throw new Error(String(j.error).slice(0, 120));
+      if (!out) throw new Error('empty rewrite, try again');
+      el.value = out;
+      el.dispatchEvent(new Event('input'));
+      enhStatus(field, '\u2713 rewritten in ' + ((j.elapsed_ms || 0) ? (j.elapsed_ms / 1000).toFixed(0) + 's' : 'a moment'));
+    }).catch(function (e) {
+      enhStatus(field, '\u2717 ' + (e.name === 'AbortError' ? 'timeout' : String(e.message || e).slice(0, 140)));
+    }).then(function () { btn.disabled = tplBtn.disabled = false; });
+  }
+  function refreshTplMenu(field) {
+    var sel = $('tplmenu-' + field);
+    sel.innerHTML = '';
+    var og1 = document.createElement('optgroup'); og1.label = 'Built-in';
+    TPL_BUILTIN[field].forEach(function (t, i) {
+      var o = document.createElement('option');
+      o.value = 'b:' + i; o.textContent = t.title; og1.appendChild(o);
+    });
+    sel.appendChild(og1);
+    var saved = tplLoad(field);
+    if (saved.length) {
+      var og2 = document.createElement('optgroup'); og2.label = 'Saved';
+      saved.forEach(function (t, i) {
+        var o = document.createElement('option');
+        o.value = 's:' + i; o.textContent = t.title; og2.appendChild(o);
+      });
+      sel.appendChild(og2);
+    }
+    var og3 = document.createElement('optgroup'); og3.label = '\u2014';
+    var os = document.createElement('option'); os.value = 'save'; os.textContent = '\uD83D\uDCBE Save current as\u2026'; og3.appendChild(os);
+    if (saved.length) {
+      var od = document.createElement('option'); od.value = 'del'; od.textContent = '\uD83D\uDDD1 Delete saved\u2026'; og3.appendChild(od);
+    }
+    sel.appendChild(og3);
+    var osel = document.createElement('option');
+    osel.value = ''; osel.textContent = 'Pick a template\u2026'; osel.selected = true;
+    sel.insertBefore(osel, sel.firstChild);
+  }
+  function tplMenuAction(field) {
+    var sel = $('tplmenu-' + field), v = sel.value;
+    if (!v) return;
+    var el = $(field);
+    if (v === 'save') {
+      var title = (window.prompt('Template name:', el.value.trim().split('\n')[0].slice(0, 40)) || '').trim();
+      if (title && el.value.trim()) {
+        var list = tplLoad(field).filter(function (t) { return t.title !== title; });
+        list.unshift({ title: title, body: el.value });
+        tplSave(field, list);
+        enhStatus(field, '\u2713 saved \u201e' + title + '\u201d');
+      }
+    } else if (v === 'del') {
+      var saved2 = tplLoad(field);
+      var name = (window.prompt('Delete which saved template? Type its exact name:', '') || '').trim();
+      var keep = saved2.filter(function (t) { return t.title !== name; });
+      if (keep.length !== saved2.length) { tplSave(field, keep); enhStatus(field, '\uD83D\uDDD1 deleted \u201e' + name + '\u201d'); }
+    } else {
+      var parts = v.split(':');
+      var arr = parts[0] === 's' ? tplLoad(field) : TPL_BUILTIN[field];
+      var item = arr[Number(parts[1])];
+      if (item) { el.value = item.body; el.dispatchEvent(new Event('input')); }
+    }
+    refreshTplMenu(field);
+    sel.value = '';
+  }
+  ['style', 'lyrics'].forEach(function (field) {
+    enhRow(field);
+    $('enh-' + field).addEventListener('click', function () { enhance(field); });
+    $('tpl-' + field).addEventListener('click', function () {
+      var sel = $('tplmenu-' + field);
+      if (sel.hidden) { refreshTplMenu(field); sel.hidden = false; } else sel.hidden = true;
+    });
+    $('tplmenu-' + field).addEventListener('change', function () { tplMenuAction(field); });
+  });
+
   loadModels(); loadLibrary(); loadAbcSelect();
   // Restore AFTER server settings land so the user's last (possibly unsaved)
   // edits win over the server-persisted snapshot.
