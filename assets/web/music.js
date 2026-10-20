@@ -50,7 +50,7 @@
   // survive. Poll failures are retried until the deadline — only then does
   // the caller see an error. Resolves with the same JSON a sync generate
   // would have returned (j.response / j.error).
-  function generateAndWait(model, prompt, maxMs) {
+  function generateAndWait(model, prompt, maxMs, _retry) {
     var deadline = Date.now() + (maxMs || 2700000);
     var startedAt = Date.now();
     return api('/api/generate', { model: model, prompt: prompt, async: true }, 30000)
@@ -72,15 +72,31 @@
               return s.result;
             })
             .catch(function (e) {
+              // 404 = the app restarted while our job ran: the usual cause is
+              // the server's own self-heal after a NEEDS_RESTART verdict that
+              // fired before we could read it (20.10, user saw a manual
+              // "Retry now" on Cover+ABC). The restart is exactly what the
+              // retry needs anyway — wait for the app and resubmit ONCE.
+              if (e && /404|no such job|job lost/.test(e.message)) {
+                if (_retry || Date.now() > deadline)
+                  throw new Error('job lost after auto-retry: the app keeps ' +
+                    'restarting mid-job. Try again — if it repeats, the ' +
+                    'model genuinely does not fit the current memory state.');
+                setStatus('The app restarted mid-job (RAM cleanup) — waiting ' +
+                  'for it to come back, then retrying automatically…', 'busy');
+                return api('/api/models/presets', undefined, 8000)
+                  .then(function () { return sleep(3000); })   // already up
+                  .catch(function () {
+                    return selfHealWait()
+                      .catch(function () { return legacyRestart(); });
+                  })
+                  .then(function () {
+                    return generateAndWait(model, prompt,
+                                           maxMs, true);
+                  });
+              }
               // a dropped poll is not a failure: retry until the deadline
-              if (e && /vanished|old build|still running|job lost/.test(e.message)) throw e;
-              // 404 = the server no longer knows this id: the app restarted
-              // mid-generation (crash or NEEDS_RESTART death). Retrying is
-              // pointless — say so instead of spinning for 45 minutes (20.10,
-              // user saw ">600s" on a job that had died with the app).
-              if (e && /404|no such job/.test(e.message))
-                throw new Error('job lost: the app restarted mid-generation. ' +
-                  'Retry now — if RAM was fragmented the restart cleaned it.');
+              if (e && /vanished|old build|still running/.test(e.message)) throw e;
               if (Date.now() > deadline) throw e;
               return sleep(8000).then(poll);
             });
@@ -88,6 +104,7 @@
         return sleep(2500).then(poll);
       });
   }
+
 
   function setStatus(msg, cls) {
     var el = $('gen-status');
