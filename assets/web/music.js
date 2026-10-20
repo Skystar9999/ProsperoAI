@@ -48,7 +48,21 @@
     var el = $('gen-status');
     el.textContent = msg || '';
     el.className = cls || '';
-  }  function setAbcStatus(msg, cls) {
+  }  function waitForStems(base, onReady, onFail) {
+    var probe = AUDIO_DIR + encodeURIComponent(base + '-vocals.wav') + '?p=';
+    var tries = 0;
+    var iv = setInterval(function () {
+      tries++;
+      fetch(probe + Date.now(), { headers: { Range: 'bytes=0-0' } })
+        .then(function (r) {
+          if (r.ok || r.status === 206) { clearInterval(iv); onReady(); }
+          else if (tries > 36) { clearInterval(iv); onFail('the stems files never appeared (3 min)'); }
+        })
+        .catch(function () { if (tries > 36) { clearInterval(iv); onFail('connection lost and the stems files never appeared'); } });
+    }, 5000);
+  }
+
+  function setAbcStatus(msg, cls) {
     var el = $('abc-status'); if (!el) return;
     el.hidden = !msg; el.textContent = msg || '';
     el.setAttribute('data-cls', cls || '');
@@ -441,7 +455,18 @@
             ' files grouped under the track. Open the ✂ stems group and press ZIP to take them all.', 'ok');
         })
         .catch(function (err) {
-          setStatus('Stems (PS5 GPU) failed: ' + (err && err.message ? err.message : err), 'err');
+          var msg = err && err.message ? err.message : String(err);
+          var network = err instanceof TypeError || /fetch|network|aborted|load failed/i.test(msg);
+          if (!network) { setStatus('Stems (PS5 GPU) failed: ' + msg.slice(0, 160), 'err'); return; }
+          setStatus('Stems (PS5 GPU): connection dropped (' + msg.slice(0, 60) +
+            ') - the console keeps working, waiting for the files to appear...', 'busy');
+          var base = String(filename || '').replace(/\.(wav|mp3)$/i, '').replace(/_seed\d+$/i, '');
+          waitForStems(base, function () {
+            loadLibrary();
+            setStatus('Stems ready - the console finished despite the dropped connection. Open the stems group under the track.', 'ok');
+          }, function (why) {
+            setStatus('Stems (PS5 GPU) failed: ' + msg.slice(0, 120) + ' (' + why + ')', 'err');
+          });
         });
     });
     var api_ = { pause: function () { audio.pause(); } };
