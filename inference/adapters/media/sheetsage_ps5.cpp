@@ -452,7 +452,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
     // failed — the load itself consumes the headroom. So require ~7 GiB
     // contiguous up-front; below that the title restarts automatically (the UI
     // reacts to NEEDS_RESTART) instead of dying 30 s deep in graph build.
-    if (prospero_memory::largest_free_block() < (7000ull << 20))
+    if (prospero_memory::largest_free_block() < (7500ull << 20))
     {
         const unsigned long long mb =
             static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20);
@@ -461,7 +461,7 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
         stage_log(line);
         std::snprintf(response, response_capacity,
                       "NEEDS_RESTART GPU memory fragmented: largest contiguous block is %llu MiB "
-                      "and SheetSage needs ~7 GiB free. Restart the title and retry.", mb);
+                      "and SheetSage needs ~7.5 GiB free. Restart the title and retry.", mb);
         return 1;
     }
     const std::string model_root(root);

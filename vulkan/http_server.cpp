@@ -684,7 +684,7 @@ void prospero_self_restart()
     // the daemons are absent. Keeps the harness link clean of sceNet*.
     const char *paths[2][2] = {
         {"POST /api/v1/games/mount HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-         "Content-Type: application/json\r\nContent-Length: 23\r\n"
+         "Content-Type: application/json\r\nContent-Length: 24\r\n"
          "Connection: close\r\n\r\n"
          "{\"title_id\":\"PPSA99004\"}", "10101"},
         {"GET /launch?titleId=PPSA99004 HTTP/1.1\r\nHost: 127.0.0.1\r\n"
@@ -718,7 +718,7 @@ void prospero_self_restart()
         return;
     local_http_fire(api, 10101,
                     "POST /api/v1/games/mount HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                    "Content-Type: application/json\r\nContent-Length: 23\r\n"
+                    "Content-Type: application/json\r\nContent-Length: 24\r\n"
                     "Connection: close\r\n\r\n"
                     "{\"title_id\":\"PPSA99004\"}");
     local_http_fire(api, 8080,
@@ -789,7 +789,12 @@ void *generate_job_worker(void *argument)
         std::lock_guard<std::mutex> lock(jobs_mutex);
         job->result = std::move(result);
         job->state = job->result.find("\"done\":true") != std::string::npos ? 1 : 2;
-        needs_restart = job->state == 2 && job->result.find("NEEDS_RESTART") != std::string::npos;
+        needs_restart = job->state == 2 &&
+                        (job->result.find("NEEDS_RESTART") != std::string::npos ||
+                         job->result.find("backend buffer allocation failed") !=
+                             std::string::npos ||  // Oobleck VAE / encoder: died mid-run
+                         job->result.find("failed to allocate Yue2 NAR graph") !=
+                             std::string::npos);
     }
     if (needs_restart)
     {

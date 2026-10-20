@@ -452,14 +452,14 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
     // graph already — skip the gate then so back-to-back generations never
     // restart.
     if (!(g_model && g_session && g_model_root == root) &&
-        prospero_memory::largest_free_block() < (7000ull << 20))
+        prospero_memory::largest_free_block() < (7500ull << 20))
     {
         const unsigned long long mb =
             static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20);
         log_memory("memory gate");
         std::snprintf(response, response_capacity,
                       "NEEDS_RESTART GPU memory fragmented: largest contiguous block is %llu MiB "
-                      "and a cold YuE2 load needs ~7 GiB free. Restart the title and retry.",
+                      "and a cold YuE2 load needs ~7.5 GiB free. Restart the title and retry.",
                       mb);
         return 1;
     }
