@@ -1234,6 +1234,14 @@
     });
   }
   function normId(x) { return String(x).toLowerCase().replace(/-/g, '_'); }
+  function markActive() {
+    var sel = $('chat-model');
+    if (!sel) return;
+    [].forEach.call(sel.options, function (o) {
+      var base = (o.dataset.base || o.textContent).replace(/^\u2713 /, '');
+      o.textContent = (o.value === sel.value ? '\u2713 ' : '') + modelLabel(base, parseFloat(o.dataset.size || 0));
+    });
+  }
   function loadChatModels() {
     var sel = $('chat-model');
     if (!sel || sel.dataset.bound) return;
@@ -1259,9 +1267,11 @@
           o2.value = s.id; o2.textContent = s.id; sel.appendChild(o2);
         }
         if (s && s.id) sel.value = s.id;
+        markActive();
       });
     }).then(function () {
       sel.addEventListener('change', function () {
+        markActive();
         sel.disabled = true;
         api('/api/models/selection', { id: sel.value }, 20000).catch(function (e) {
           enhStatus('style', 'Chat model switch failed: ' + String(e && e.message || e).slice(0, 80));
