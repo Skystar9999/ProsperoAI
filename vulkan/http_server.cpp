@@ -2964,12 +2964,25 @@ void handle_connection(const NetApi &api, int sock)
 #if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/system/memory") == 0)
     {
-        char mem[160]{};
-        std::snprintf(mem, sizeof(mem),
-                      "{\"total_free_mib\":%llu,\"largest_block_mib\":%llu,\"flexible_free_mib\":%llu}",
-                      static_cast<unsigned long long>(prospero_memory::free_total() >> 20),
-                      static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
-                      static_cast<unsigned long long>(prospero_memory::flexible_free() >> 20));
+        prospero_memory::BlockInfo blocks[96];
+        std::int64_t pool_mib = 0;
+        const int block_count = prospero_memory::walk_blocks(blocks, 96, &pool_mib);
+        char mem[2600]{};
+        int used = std::snprintf(
+            mem, sizeof(mem),
+            "{\"total_free_mib\":%llu,\"largest_block_mib\":%llu,\"flexible_free_mib\":%llu,"
+            "\"pool_mib\":%lld,\"blocks\":[",
+            static_cast<unsigned long long>(prospero_memory::free_total() >> 20),
+            static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
+            static_cast<unsigned long long>(prospero_memory::flexible_free() >> 20),
+            static_cast<long long>(pool_mib));
+        for (int i = 0; i < block_count && used > 0 && used < static_cast<int>(sizeof(mem)) - 40;
+             ++i)
+            used += std::snprintf(mem + used, sizeof(mem) - used, "%s[%lld,%lld,%d]", i ? "," : "",
+                                  static_cast<long long>(blocks[i].start_mb),
+                                  static_cast<long long>(blocks[i].size_mb), blocks[i].type);
+        if (used > 0 && used < static_cast<int>(sizeof(mem)) - 2)
+            std::snprintf(mem + used, sizeof(mem) - used, "]}");
         send_status(api, sock, "200 OK", "application/json", mem);
     }
 #endif
