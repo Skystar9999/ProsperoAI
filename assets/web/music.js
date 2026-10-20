@@ -293,7 +293,7 @@
           if (resp.indexOf('NEEDS_RESTART') >= 0 && retry > 0) {
             setStatus('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying...', 'busy');
             setAbcStatus('⏳ Freeing GPU memory: restarting the app automatically (~20 s), then retrying…', 'busy');
-            return restartTitle().then(function () { return once(retry - 1); });
+            return selfHealWait().catch(function () { return legacyRestart(); }).then(function () { return once(retry - 1); });
           }
           var m = resp.match(/\/download0\/\S+?\.abc/);
           if (!m) throw new Error(resp.slice(0, 220));
@@ -754,7 +754,7 @@
       if (resp.indexOf('NEEDS_RESTART') >= 0 && !ov.noRestart) {
         clearInterval(timer);
         say('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying once...', 'busy');
-        return restartTitle().then(function () {
+        return selfHealWait().catch(function () { return legacyRestart(); }).then(function () {
           var ov2 = {};
           for (var k in ov) ov2[k] = ov[k];
           ov2.noRestart = true;
@@ -766,7 +766,7 @@
         say('GPU memory fragmented — restarting the app automatically (~20 s) and retrying...', 'busy');
         var ov2 = {}; for (var k in ov) ov2[k] = ov[k];
         ov2.restart_done = true;
-        return restartTitle().then(function () { return generateOnce(ov2); });
+        return selfHealWait().catch(function () { return legacyRestart(); }).then(function () { return generateOnce(ov2); });
       }
       var res = $('result');
       res.innerHTML = '';
@@ -1086,9 +1086,38 @@
   // mount can answer 409 "Device busy" while the dying title is still
   // unmounting and launch answers 503 when the device isn't ready — so the
   // pair is retried every 30s until the server is actually back.
+  function selfHealWait() {
+    // Build #19: the server restarts ITSELF via its local daemon stack
+    // (loopback mount+launch), so the browser only has to watch it go down
+    // and come back. If 25 s pass with no outage at all, self-heal is not
+    // running (old build) — caller falls back to the legacy loop.
+    return new Promise(function (res, rej) {
+      var t0 = Date.now(), sawDown = false;
+      (function probe() {
+        var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        if (ctl) setTimeout(function () { ctl.abort(); }, 6000);
+        fetch('/api/models/presets', ctl ? { signal: ctl.signal } : {}).then(function (r) {
+          if (!r.ok) throw new Error('down');
+          if (sawDown) return res();
+          if (Date.now() - t0 > 25000) return rej(new Error('no self-heal observed'));
+          setTimeout(probe, 2500);
+        }).catch(function () {
+          sawDown = true;
+          if (Date.now() - t0 > 300000) return rej(new Error('self-heal took too long'));
+          setTimeout(probe, 2500);
+        });
+      })();
+    });
+  }
   function restartTitle() {
+    setStatus('Restarting title: server self-heal (no browser work needed)…', 'busy');
+    return api('/api/system/restart', {}, 8000).catch(function () { /* bye */ })
+      .then(function () { return selfHealWait(); })
+      .catch(function () { return legacyRestart(); });
+  }
+  function legacyRestart() {
     var host = location.hostname;
-    setStatus('Restarting title: self-exit…', 'busy');
+    setStatus('Self-heal unavailable — mount + launch from the browser…', 'busy');
     var cycle = function () {
       var mctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       if (mctl) setTimeout(function () { mctl.abort(); }, 12000);

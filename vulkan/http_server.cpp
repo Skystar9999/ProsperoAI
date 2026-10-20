@@ -620,6 +620,71 @@ unsigned long long jobs_now_ms()
     return static_cast<unsigned long long>(ts.tv_sec) * 1000ull + ts.tv_nsec / 1000000ull;
 }
 
+// ---------------------------------------------------------------------------
+// Self-heal restart: ask the PS5's own websrv/plmanager (loopback, no LAN
+// round-trips, no browser) to remount and relaunch this title. Validated
+// 20.10: GET :8080/launch while the title is running kills+relaunches it
+// (HTTP 503 body is bluff). On the Linux host harness the connects simply
+// get ECONNREFUSED and we return false — harmless.
+// ---------------------------------------------------------------------------
+namespace
+{
+// One-shot blocking HTTP request against 127.0.0.1 through libSceNet (the
+// libc BSD API does not exist on this runtime); response is discarded.
+// Loopback connects to local daemons complete or refuse immediately, so no
+// socket timeouts are needed — and SceNet's timeval layout is not trusted.
+bool local_http_fire(const NetApi &api, unsigned short port, const char *request)
+{
+    const int sock = api.socket("prosperoai-http", kAfInet, kSockStream, 0);
+    if (sock < 0)
+        return false;
+    SceNetSockaddrIn addr{};
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = static_cast<std::uint8_t>(kAfInet);
+    addr.sin_port = static_cast<std::uint16_t>((port >> 8) | (port << 8));
+    addr.sin_addr = 0x0100007fu; // 127.0.0.1, big-endian byte order
+    if (api.connect(sock, &addr, sizeof(addr)) != 0)
+    {
+        api.socket_close(sock);
+        return false;
+    }
+    const std::size_t len = std::strlen(request);
+    bool sent = true;
+    std::size_t off = 0;
+    while (off < len)
+    {
+        const int n = api.send(sock, request + off, static_cast<unsigned long>(len - off), 0);
+        if (n <= 0)
+        {
+            sent = false;
+            break;
+        }
+        off += static_cast<std::size_t>(n);
+    }
+    char sink[128];
+    (void)api.recv(sock, sink, sizeof(sink), 0);
+    api.socket_close(sock);
+    return sent;
+}
+} // namespace
+
+// Remount + relaunch this title via the PS5's own daemon stack, loopback only.
+// plmanager kills the running instance and boots a fresh one (503 bluff).
+void prospero_self_restart()
+{
+    NetApi api{};
+    if (!bring_up_net_api(&api))
+        return;
+    local_http_fire(api, 10101,
+                    "POST /api/v1/games/mount HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    "Content-Type: application/json\r\nContent-Length: 23\r\n"
+                    "Connection: close\r\n\r\n"
+                    "{\"title_id\":\"PPSA99004\"}");
+    local_http_fire(api, 8080,
+                    "GET /launch?titleId=PPSA99004 HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    "Connection: close\r\n\r\n");
+}
+
 // Builds exactly the JSON that the synchronous /api/generate would send.
 std::string generate_response_json(const char *request_body)
 {
@@ -677,9 +742,23 @@ void *generate_job_worker(void *argument)
     {
         result = "{\"done\":false,\"error\":\"job worker threw\"}";
     }
-    std::lock_guard<std::mutex> lock(jobs_mutex);
-    job->result = std::move(result);
-    job->state = job->result.find("\"done\":true") != std::string::npos ? 1 : 2;
+    bool needs_restart = false;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex);
+        job->result = std::move(result);
+        job->state = job->result.find("\"done\":true") != std::string::npos ? 1 : 2;
+        needs_restart = job->state == 2 && job->result.find("NEEDS_RESTART") != std::string::npos;
+    }
+    if (needs_restart)
+    {
+        // Self-heal without any browser involvement (20.10): the gate fired,
+        // so this title is doomed for cold loads anyway. Give pollers ~8 s to
+        // read the error, then ask the local websrv/plmanager to remount and
+        // relaunch us — validated same day: launch while running restarts the
+        // title (503 is bluff; plmanager kills and relaunches).
+        ::sleep(8);
+        prospero_self_restart();
+    }
     return nullptr;
 }
 
@@ -784,7 +863,10 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
     // Model output may end halfway through a multibyte UTF-8 character when
     // num_predict is reached. Replace malformed bytes instead of letting JSON
     // serialization throw out of the HTTP worker and abort the whole title.
-    send_json(api, sock, generate_response_json(request_body).c_str());
+    std::string sync_result = generate_response_json(request_body);
+    send_json(api, sock, sync_result.c_str());
+    if (sync_result.find("NEEDS_RESTART") != std::string::npos)
+        prospero_self_restart(); // legacy synchronous callers get self-heal too
 }
 
 void handle_chat(const NetApi &api, int sock, const char *request_body)
@@ -2798,12 +2880,13 @@ void handle_connection(const NetApi &api, int sock)
     else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)
         handle_music_delete(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/system/restart") == 0) {
-        // queue orchestrator lives in the browser: it can mount (:10101) and
-        // launch (:8080) cross-origin (both send ACAO:*), but killing us must
-        // come from us — pldmgr demands a custom header CORS would preflight.
-        // Respond first, give the socket time to drain, then hard-exit; the
-        // browser polls for the outage and brings the title back.
+        // Self-heal path (build #19): we ask our OWN daemon stack to remount
+        // and relaunch us over loopback — validated 20.10 that launch while
+        // running kills+relaunches the title. The browser is no longer the
+        // orchestrator; it only waits for us to come back. The legacy
+        // hard-exit stays as fallback in case the daemon calls get lost.
         send_status(api, sock, "200 OK", "application/json", "{\"ok\":true,\"bye\":true}");
+        prospero_self_restart();
         ::usleep(1200000);
         ::_exit(0);
     }
