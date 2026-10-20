@@ -702,6 +702,16 @@
   function generateOnce(ov) {
     ov = ov || {};
     var say = ov.status || setStatus;
+    // Fail fast on inputs the console is known to reject silently after
+    // burning two minutes of model load (validated 20.10: empty style ->
+    // "generation failed" with zero adapter logs).
+    if ($('model').value === 'sheetsage2-orig') {
+      if (!$('abc').value.trim()) { say('Paste an ABC score first (or use Cover + ABC).', 'err'); return Promise.resolve(); }
+    } else if (!($('style').value || '').trim()) {
+      say('Write a style prompt first (e.g. "romanian pop, female vocal").', 'err'); return Promise.resolve();
+    } else if (!($('lyrics').value || '').trim() && !($('abc').value || '').trim()) {
+      say('Write lyrics (or load an ABC score) before generating.', 'err'); return Promise.resolve();
+    }
     var seed = (ov.seed != null) ? ov.seed : (parseInt($('seed').value, 10) || 42);
     var t0 = Date.now();
     var timer = setInterval(function () {
@@ -752,6 +762,12 @@
         });
       }
       var m = resp.match(/\/download0\/\S+?\.(?:wav|mp3)/);
+      if (/NEEDS_RESTART/.test(resp) && !ov.restart_done) {
+        say('GPU memory fragmented — restarting the app automatically (~20 s) and retrying...', 'busy');
+        var ov2 = {}; for (var k in ov) ov2[k] = ov[k];
+        ov2.restart_done = true;
+        return restartTitle().then(function () { return generateOnce(ov2); });
+      }
       var res = $('result');
       res.innerHTML = '';
       if (m) {
@@ -804,7 +820,7 @@
         res2.innerHTML = '';
         var p2 = document.createElement('div'); p2.className = 'path'; p2.textContent = resp;
         res2.appendChild(p2);
-        say('Response without audio file', 'err');
+        say('Generation failed: ' + (resp.trim() ? resp.trim().slice(0, 160) : 'empty response — console log has the details'), 'err');
         return { url: '', fname: '' };
       }
     }).catch(function (e) {

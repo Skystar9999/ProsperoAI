@@ -443,6 +443,26 @@ extern "C" int ps5_yue2_generate(const char *root, const char *prompt, char *res
 {
     if (!root || !*root || !prompt || !*prompt || !response || !response_capacity)
         return 1;
+    // Contiguous-memory gate (cold engine only): a cold YuE2 load takes
+    // ~3.2 GiB of weights plus KV, then asks ggml-vulkan for the NAR graph
+    // buffers (348 MiB observed). When the largest block is already small,
+    // the engine loads and generation dies minutes later with "failed to
+    // allocate Yue2 NAR graph" (validated 20.10: cold load at 6071 MiB
+    // failed, 7686 and 8136 MiB succeeded). A warm engine reserved its
+    // graph already — skip the gate then so back-to-back generations never
+    // restart.
+    if (!(g_model && g_session && g_model_root == root) &&
+        prospero_memory::largest_free_block() < (7000ull << 20))
+    {
+        const unsigned long long mb =
+            static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20);
+        log_memory("memory gate");
+        std::snprintf(response, response_capacity,
+                      "NEEDS_RESTART GPU memory fragmented: largest contiguous block is %llu MiB "
+                      "and a cold YuE2 load needs ~7 GiB free. Restart the title and retry.",
+                      mb);
+        return 1;
+    }
     char output[160];
     if (!prospero_generated_output_path(output, sizeof(output), "audio", "yue2", "wav"))
         return 1;
