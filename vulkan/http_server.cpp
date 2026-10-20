@@ -29,6 +29,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -672,6 +678,41 @@ bool local_http_fire(const NetApi &api, unsigned short port, const char *request
 // plmanager kills the running instance and boots a fresh one (503 bluff).
 void prospero_self_restart()
 {
+#ifdef __linux__
+    // Host harness: no libSceNet to link — real BSD loopback, which gets an
+    // instant ECONNREFUSED here (no daemon stack), exactly like the PS5 when
+    // the daemons are absent. Keeps the harness link clean of sceNet*.
+    const char *paths[2][2] = {
+        {"POST /api/v1/games/mount HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+         "Content-Type: application/json\r\nContent-Length: 23\r\n"
+         "Connection: close\r\n\r\n"
+         "{\"title_id\":\"PPSA99004\"}", "10101"},
+        {"GET /launch?titleId=PPSA99004 HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+         "Connection: close\r\n\r\n", "8080"}};
+    (void)paths;
+    const char *reqs[2] = {paths[0][0], paths[1][0]};
+    const int ports[2] = {10101, 8080};
+    for (int i = 0; i < 2; ++i)
+    {
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            continue;
+        struct timeval tv{3, 0};
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        struct sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<unsigned short>(ports[i]));
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (::connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == 0)
+        {
+            (void)!::send(fd, reqs[i], std::strlen(reqs[i]), 0);
+            char sink[128];
+            (void)!::recv(fd, sink, sizeof(sink), 0);
+        }
+        ::close(fd);
+    }
+#else
     NetApi api{};
     if (!bring_up_net_api(&api))
         return;
@@ -683,6 +724,7 @@ void prospero_self_restart()
     local_http_fire(api, 8080,
                     "GET /launch?titleId=PPSA99004 HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                     "Connection: close\r\n\r\n");
+#endif
 }
 
 // Builds exactly the JSON that the synchronous /api/generate would send.
