@@ -1214,7 +1214,44 @@
   // Enhance rescrie draft-ul cu chat-modelul local (MiniCPM5) folosind
   // prompt-urile de sistem exacte din mlx-serve (varianta yue2). Templates
   // = catalog built-in (exemplele mlx-serve) + salvare localStorage.
-  var CHAT_MODEL = 'Ternary-Bonsai-2-27B-PTQ1_0.gguf';
+  var CHAT_MODELS = [
+    ['Ternary-Bonsai-2-27B-PTQ1_0.gguf', '\uD83E\uDD80 Bonsai 27B (ternary)'],
+    ['qwen3.8-9b-distill-q4-k-m.gguf', 'Qwen3.8 9B'],
+    ['Mistral-7B-Instruct-v0.3.Q4_0.gguf', 'Mistral 7B'],
+    ['MiniCPM5-2B-Q8_0.gguf', 'MiniCPM5 2B (fast)']
+  ];
+  function normId(x) { return String(x).toLowerCase().replace(/-/g, '_'); }
+  function loadChatModels() {
+    var sel = $('chat-model');
+    if (!sel || sel.dataset.bound) return;
+    sel.dataset.bound = '1';
+    api('/api/models/presets', undefined, 15000).then(function (d) {
+      var seen = {}, opts = [];
+      CHAT_MODELS.forEach(function (m) { seen[normId(m[0])] = 1; opts.push(m); });
+      ((d && d.data) || []).forEach(function (p) {
+        if (p.kind === 0 && !seen[normId(p.id)]) opts.push([p.id, p.name || p.id]);
+      });
+      sel.innerHTML = '';
+      opts.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m[0]; o.textContent = m[1]; sel.appendChild(o);
+      });
+      return api('/api/models/selection', undefined, 15000).then(function (s) {
+        if (s && s.id && !seen[normId(s.id)]) {
+          var o2 = document.createElement('option');
+          o2.value = s.id; o2.textContent = s.id; sel.appendChild(o2);
+        }
+        if (s && s.id) sel.value = s.id;
+      });
+    }).then(function () {
+      sel.addEventListener('change', function () {
+        sel.disabled = true;
+        api('/api/models/selection', { id: sel.value }, 20000).catch(function (e) {
+          enhStatus('style', 'Chat model switch failed: ' + String(e && e.message || e).slice(0, 80));
+        }).then(function () { sel.disabled = false; });
+      });
+    }).catch(function () { sel.hidden = true; });
+  }
   var ENH_STYLE_SYS = 'You rewrite music style prompts for a text-to-music model. ' +
     'Write ONE line of comma-separated tags like the examples: language or genre first, ' +
     'then instruments, mood and the lead vocal. No sentences, no tempo or key (the score ' +
@@ -1281,7 +1318,9 @@
     if (!draft) { enhStatus(field, 'Write something first.'); return; }
     var btn = $('enh-' + field), tplBtn = $('tpl-' + field);
     btn.disabled = tplBtn.disabled = true;
-    enhStatus(field, 'Rewriting with ' + CHAT_MODEL + ' (first call may load the chat model, ~1 min)\u2026', true);
+    var cSel = $('chat-model');
+    var chatModel = (cSel && cSel.value) || '';
+    enhStatus(field, 'Rewriting with ' + ((cSel && cSel.selectedIndex > -1) ? cSel.options[cSel.selectedIndex].text : chatModel) + ' (first call may load the chat model, ~1 min)\u2026', true);
     var sys, user, predict;
     if (field === 'style') {
       sys = ENH_STYLE_SYS;
@@ -1299,7 +1338,7 @@
       if (st) user += '\n\nThe music style is:\n' + st;
       predict = 900;
     }
-    api('/api/chat', { model: CHAT_MODEL, messages: [
+    api('/api/chat', { model: chatModel || undefined, messages: [
       { role: 'system', content: sys }, { role: 'user', content: user }
     ], num_predict: predict, temperature: 0.2 }, 240000).then(function (j) {
       var out = stripWrap(j && j.message ? j.message.content : '');
@@ -1376,7 +1415,7 @@
     $('tplmenu-' + field).addEventListener('change', function () { tplMenuAction(field); });
   });
 
-  loadModels(); loadLibrary(); loadAbcSelect();
+  loadModels(); loadChatModels(); loadLibrary(); loadAbcSelect();
   // Restore AFTER server settings land so the user's last (possibly unsaved)
   // edits win over the server-persisted snapshot.
   loadSettings().then(restoreForm).then(runningJobBanner);
