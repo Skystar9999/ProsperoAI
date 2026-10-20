@@ -789,12 +789,12 @@ void *generate_job_worker(void *argument)
         std::lock_guard<std::mutex> lock(jobs_mutex);
         job->result = std::move(result);
         job->state = job->result.find("\"done\":true") != std::string::npos ? 1 : 2;
-        needs_restart = job->state == 2 &&
-                        (job->result.find("NEEDS_RESTART") != std::string::npos ||
+        needs_restart = (job->result.find("NEEDS_RESTART") != std::string::npos ||
                          job->result.find("backend buffer allocation failed") !=
-                             std::string::npos ||  // Oobleck VAE / encoder: died mid-run
+                             std::string::npos || // Oobleck VAE / encoder: died mid-run
                          job->result.find("failed to allocate Yue2 NAR graph") !=
-                             std::string::npos);
+                             std::string::npos); // adapter reports these with done:true, so
+                                                // the match must be on content, not state
     }
     if (needs_restart)
     {
@@ -912,7 +912,9 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
     // serialization throw out of the HTTP worker and abort the whole title.
     std::string sync_result = generate_response_json(request_body);
     send_json(api, sock, sync_result.c_str());
-    if (sync_result.find("NEEDS_RESTART") != std::string::npos)
+    if (sync_result.find("NEEDS_RESTART") != std::string::npos ||
+        sync_result.find("backend buffer allocation failed") != std::string::npos ||
+        sync_result.find("failed to allocate Yue2 NAR graph") != std::string::npos)
         prospero_self_restart(); // legacy synchronous callers get self-heal too
 }
 

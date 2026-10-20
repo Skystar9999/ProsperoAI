@@ -290,7 +290,7 @@
         })
         .then(function (j) {
           var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
-          if (resp.indexOf('NEEDS_RESTART') >= 0 && retry > 0) {
+          if (/NEEDS_RESTART|backend buffer allocation failed|failed to allocate Yue2 NAR/.test(resp) && retry > 0) {
             setStatus('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying...', 'busy');
             setAbcStatus('⏳ Freeing GPU memory: restarting the app automatically (~20 s), then retrying…', 'busy');
             return selfHealWait().catch(function () { return legacyRestart(); }).then(function () { return once(retry - 1); });
@@ -751,7 +751,7 @@
     return pre.then(doGenerate).then(function (j) {
       clearInterval(timer);
       var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 300));
-      if (resp.indexOf('NEEDS_RESTART') >= 0 && !ov.noRestart) {
+      if (/NEEDS_RESTART|backend buffer allocation failed|failed to allocate Yue2 NAR/.test(resp) && !ov.noRestart) {
         clearInterval(timer);
         say('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying once...', 'busy');
         return selfHealWait().catch(function () { return legacyRestart(); }).then(function () {
@@ -762,7 +762,7 @@
         });
       }
       var m = resp.match(/\/download0\/\S+?\.(?:wav|mp3)/);
-      if (/NEEDS_RESTART/.test(resp) && !ov.restart_done) {
+      if (/NEEDS_RESTART|backend buffer allocation failed|failed to allocate Yue2 NAR/.test(resp) && !ov.restart_done) {
         say('GPU memory fragmented — restarting the app automatically (~20 s) and retrying...', 'busy');
         var ov2 = {}; for (var k in ov) ov2[k] = ov[k];
         ov2.restart_done = true;
