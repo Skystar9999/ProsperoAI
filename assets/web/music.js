@@ -44,6 +44,41 @@
     });
   }
 
+  // Fire an async job and poll for its result: the console answers
+  // /api/generate immediately with a job_id, the generation runs on the
+  // server, and every poll is a short request a flaky phone connection can
+  // survive. Poll failures are retried until the deadline — only then does
+  // the caller see an error. Resolves with the same JSON a sync generate
+  // would have returned (j.response / j.error).
+  function generateAndWait(model, prompt, maxMs) {
+    var deadline = Date.now() + (maxMs || 2700000);
+    return api('/api/generate', { model: model, prompt: prompt, async: true }, 30000)
+      .then(function (j) {
+        if (!j.job_id) throw new Error('server has no async jobs (old build?)');
+        var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+        var poll = function () {
+          return api('/api/jobs?id=' + j.job_id, undefined, 20000)
+            .then(function (s) {
+              if (s && s.state === 'running') {
+                if (Date.now() > deadline)
+                  throw new Error('job ' + j.job_id + ' still running after ' +
+                    Math.round((maxMs || 2700000) / 60000) + ' min');
+                return sleep(5000).then(poll);
+              }
+              if (!s || !s.result) return { error: 'job ' + j.job_id + ' vanished' };
+              return s.result;
+            })
+            .catch(function (e) {
+              // a dropped poll is not a failure: retry until the deadline
+              if (e && /vanished|old build|still running/.test(e.message)) throw e;
+              if (Date.now() > deadline) throw e;
+              return sleep(8000).then(poll);
+            });
+        };
+        return sleep(2500).then(poll);
+      });
+  }
+
   function setStatus(msg, cls) {
     var el = $('gen-status');
     el.textContent = msg || '';
@@ -60,6 +95,17 @@
         })
         .catch(function () { if (tries > 36) { clearInterval(iv); onFail('connection lost and the stems files never appeared'); } });
     }, 5000);
+  }
+
+  function runningJobBanner() {
+    api('/api/jobs', undefined, 15000).then(function (d) {
+      var run = (d && d.jobs || []).filter(function (j) { return j.state === 'running'; });
+      if (run.length) {
+        var j = run[run.length - 1];
+        setStatus('Console is busy: ' + j.model + ' job running for ' + j.elapsed_s +
+          's — it finishes even if you close this page.', 'busy');
+      }
+    }).catch(function () {});
   }
 
   function setAbcStatus(msg, cls) {
@@ -240,7 +286,7 @@
         setAbcStatus('⏳ Generating ABC score — takes about a minute, it appears here automatically when ready…', 'busy');
       return api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
         .then(function () {
-          return api('/api/generate', { model: 'sheetsage2-orig', prompt: 'transcribe ' + filename }, 1800000);
+          return generateAndWait('sheetsage2-orig', 'transcribe ' + filename, 900000);
         })
         .then(function (j) {
           var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
@@ -443,7 +489,7 @@
       api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
         .then(function () {
           setStatus('Stems (PS5 GPU): separating on Vulkan — you can close this page', 'busy');
-          return api('/api/generate', { model: 'htdemucs-q8_0', prompt: 'separate ' + filename }, 3600000);
+          return generateAndWait('htdemucs-q8_0', 'separate ' + filename, 900000);
         })
         .then(function (j) {
           var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
@@ -456,7 +502,7 @@
         })
         .catch(function (err) {
           var msg = err && err.message ? err.message : String(err);
-          var network = err instanceof TypeError || /fetch|network|aborted|load failed/i.test(msg);
+          var network = err instanceof TypeError || /fetch|network|abort|load failed/i.test(msg);
           if (!network) { setStatus('Stems (PS5 GPU) failed: ' + msg.slice(0, 160), 'err'); return; }
           setStatus('Stems (PS5 GPU): connection dropped (' + msg.slice(0, 60) +
             ') - the console keeps working, waiting for the files to appear...', 'busy');
@@ -677,7 +723,7 @@
       };
       return api('/api/settings/runtime', body).then(function () {
         say('Generating...', 'busy');
-        return api('/api/generate', { model: $('model').value, prompt: $('style').value }, 1800000);
+        return generateAndWait($('model').value, $('style').value, 2400000);
       });
     };
     // ABC: non-empty editor => auto-save and use the file; empty editor =>
@@ -854,8 +900,7 @@
       return api('/api/settings/runtime',
         { audio_options: 'input_audio=' + AUDIO_DIR + name }, 30000)
         .then(function () {
-          return api('/api/generate',
-            { model: 'sheetsage2-orig', prompt: 'transcribe ' + name }, 1800000);
+          return generateAndWait('sheetsage2-orig', 'transcribe ' + name, 900000);
         });
     }).then(function (j) {
       var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
@@ -1112,5 +1157,5 @@
   loadModels(); loadLibrary(); loadAbcSelect();
   // Restore AFTER server settings land so the user's last (possibly unsaved)
   // edits win over the server-persisted snapshot.
-  loadSettings().then(restoreForm);
+  loadSettings().then(restoreForm).then(runningJobBanner);
 })();

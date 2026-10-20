@@ -555,17 +555,43 @@ unsigned request_option(const char *body, const char *key, unsigned fallback, un
     return static_cast<unsigned>(std::min<long>(parsed, maximum));
 }
 
-void handle_generate(const NetApi &api, int sock, const char *request_body)
+// ---- Async generate jobs -----------------------------------------------------
+// A synchronous generation holds one HTTP connection open for up to six
+// minutes; phone browsers drop such connections routinely (screen off,
+// network handover) and surface "Failed to fetch" although the console
+// finished the job successfully. With "async":true in the body the
+// generation runs on its own worker thread and the caller polls
+// /api/jobs?id=N instead — no long-held connection anywhere in the flow.
+struct AsyncJob
+{
+    unsigned id = 0;
+    int state = 0;  // 0 = running, 1 = done, 2 = error (result = final JSON)
+    std::string body;    // request body copy (the connection buffer dies)
+    std::string result;  // serialized response once finished
+    unsigned long long started_ms = 0;
+    char model[128] = {};
+    void *thread = nullptr;  // join from the poll path; detach is broken
+};
+
+std::mutex jobs_mutex;
+std::vector<std::unique_ptr<AsyncJob>> jobs;
+unsigned job_seq = 0;
+
+unsigned long long jobs_now_ms()
+{
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<unsigned long long>(ts.tv_sec) * 1000ull + ts.tv_nsec / 1000000ull;
+}
+
+// Builds exactly the JSON that the synchronous /api/generate would send.
+std::string generate_response_json(const char *request_body)
 {
     char model[128] = {};
     char prompt[65536] = {};
     json_find_string(request_body, "model", model, sizeof(model));
     if (!json_find_string(request_body, "prompt", prompt, sizeof(prompt)))
-    {
-        send_status(api, sock, "400 Bad Request", "application/json",
-                    "{\"error\":\"missing prompt\"}");
-        return;
-    }
+        return std::string("{\"error\":\"missing prompt\"}");
     const gpt_runtime_message_t messages[1] = {{"user", prompt}};
     std::vector<char> response_text(kResponseTextCapacity);
     const unsigned max_tokens =
@@ -597,17 +623,141 @@ void handle_generate(const NetApi &api, int sock, const char *request_body)
                             static_cast<unsigned long long>(stats.prefill_microseconds) * 1000}};
     if (!ok)
     {
-        // Adapters write a human-readable failure stage into the response
-        // buffer before returning non-zero; surface it instead of the bare
-        // "generation failed" so remote debugging does not need a rebuild.
         const char *detail = response_text.data();
         body["error"] = detail && *detail ? detail : "generation failed";
+    }
+    return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+void *generate_job_worker(void *argument)
+{
+    auto *job = static_cast<AsyncJob *>(argument);
+    std::string result;
+    try
+    {
+        result = generate_response_json(job->body.c_str());
+    }
+    catch (...)
+    {
+        result = "{\"done\":false,\"error\":\"job worker threw\"}";
+    }
+    std::lock_guard<std::mutex> lock(jobs_mutex);
+    job->result = std::move(result);
+    job->state = job->result.find("\"done\":true") != std::string::npos ? 1 : 2;
+    return nullptr;
+}
+
+void handle_jobs_get(const NetApi &api, int sock, unsigned id)
+{
+    std::lock_guard<std::mutex> lock(jobs_mutex);
+    for (auto &up : jobs)
+    {
+        if (up->id != id)
+            continue;
+        // Reap the finished worker exactly like the accept loop reaps
+        // connection workers: join only, never detach.
+        if (up->state != 0 && up->thread != nullptr)
+        {
+            void *retval = nullptr;
+            scePthreadJoin(up->thread, &retval);
+            up->thread = nullptr;
+        }
+        const unsigned long long elapsed =
+            (jobs_now_ms() - up->started_ms) / 1000ull;
+        const char *state = up->state == 0 ? "running" : (up->state == 1 ? "done" : "error");
+        std::string out = "{\"id\":" + std::to_string(up->id) +
+                          ",\"state\":\"" + state + "\",\"model\":\"" + up->model +
+                          "\",\"elapsed_s\":" + std::to_string(elapsed);
+        if (up->state != 0)
+            out += ",\"result\":" + up->result;
+        out += "}";
+        send_json(api, sock, out.c_str());
+        return;
+    }
+    send_status(api, sock, "404 Not Found", "application/json", "{\"error\":\"no such job\"}");
+}
+
+void handle_jobs_list(const NetApi &api, int sock)
+{
+    std::lock_guard<std::mutex> lock(jobs_mutex);
+    std::string out = "{\"jobs\":[";
+    for (auto &up : jobs)
+    {
+        if (up->state != 0 && up->thread != nullptr)
+        {
+            void *retval = nullptr;
+            scePthreadJoin(up->thread, &retval);
+            up->thread = nullptr;
+        }
+        const unsigned long long elapsed = (jobs_now_ms() - up->started_ms) / 1000ull;
+        const char *state = up->state == 0 ? "running" : (up->state == 1 ? "done" : "error");
+        if (out.size() > 9)
+            out += ",";
+        out += "{\"id\":" + std::to_string(up->id) + ",\"state\":\"" + state +
+               "\",\"model\":\"" + up->model + "\",\"elapsed_s\":" + std::to_string(elapsed) + "}";
+    }
+    out += "]}";
+    send_json(api, sock, out.c_str());
+}
+
+void handle_generate(const NetApi &api, int sock, const char *request_body)
+{
+    if (std::strstr(request_body, "\"async\":true") != nullptr)
+    {
+        auto job = std::make_unique<AsyncJob>();
+        job->body = request_body;
+        json_find_string(request_body, "model", job->model, sizeof(job->model));
+        unsigned id = 0;
+        void *thread = nullptr;
+        AsyncJob *raw = job.get();
+        {
+            std::lock_guard<std::mutex> lock(jobs_mutex);
+            id = ++job_seq;
+            job->id = id;
+            job->started_ms = jobs_now_ms();
+            jobs.push_back(std::move(job));
+            // Keep the registry bounded: evict the oldest FINISHED jobs only,
+            // so a running job's worker pointer stays valid.
+            std::size_t keep = 32;
+            if (jobs.size() > keep)
+            {
+                for (std::size_t i = 0; i < jobs.size() && jobs.size() > keep; )
+                {
+                    if (jobs[i]->state != 0)
+                        jobs.erase(jobs.begin() + static_cast<long>(i));
+                    else
+                        ++i;
+                }
+            }
+        }
+        pthread_attr_t attributes;
+        bool attr_ok = pthread_attr_init(&attributes) == 0;
+        if (attr_ok)
+            attr_ok = pthread_attr_setstacksize(&attributes, 8 * 1024 * 1024) == 0;
+        const int spawned = attr_ok ? scePthreadCreate(&thread, &attributes, generate_job_worker,
+                                                       raw, "prosperoai-job")
+                                    : -1;
+        if (attr_ok)
+            pthread_attr_destroy(&attributes);
+        std::lock_guard<std::mutex> lock(jobs_mutex);
+        if (spawned != 0)
+        {
+            raw->state = 2;
+            raw->result = "{\"done\":false,\"error\":\"job thread spawn failed\"}";
+        }
+        else
+        {
+            raw->thread = thread;
+        }
+        char out[64];
+        std::snprintf(out, sizeof(out), "{\"job_id\":%u}", id);
+        send_json(api, sock, out);
+        return;
     }
     // Model output may end halfway through a multibyte UTF-8 character when
     // num_predict is reached. Replace malformed bytes instead of letting JSON
     // serialization throw out of the HTTP worker and abort the whole title.
-    const auto serialized = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    send_json(api, sock, serialized.c_str());
+    send_json(api, sock, generate_response_json(request_body).c_str());
 }
 
 void handle_chat(const NetApi &api, int sock, const char *request_body)
@@ -2637,6 +2787,10 @@ void handle_connection(const NetApi &api, int sock)
         handle_get_tags(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/generate") == 0)
         handle_generate(api, sock, body);
+    else if (std::strcmp(method, "GET") == 0 && std::strncmp(path, "/api/jobs?id=", 13) == 0)
+        handle_jobs_get(api, sock, static_cast<unsigned>(std::atoi(path + 13)));
+    else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/jobs") == 0)
+        handle_jobs_list(api, sock);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/chat") == 0)
         handle_chat(api, sock, body);
     else
