@@ -5,6 +5,7 @@ header{display:flex;align-items:center;gap:14px;padding:14px 22px;background:var
 #brand{font-size:19px;font-weight:700;letter-spacing:.3px}
 #brand span{color:var(--accent)}
 #model{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;min-width:220px}
+#chat-model{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;min-width:0;max-width:320px;text-overflow:ellipsis}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--err);margin-left:auto}
 .dot.on{background:var(--ok)}
 main{display:grid;grid-template-columns:minmax(420px,1fr) minmax(320px,.8fr);gap:18px;padding:18px 22px;max-width:1280px;margin:0 auto}
@@ -92,3 +93,10 @@ h2 button{padding:3px 9px;font-size:13px}
 .enh-row button{padding:6px 10px;font-size:12px}
 .enh-status{font-size:12px;opacity:.7}
 .enh-row select{font-size:12px}
+@media (max-width:700px){
+  header{flex-wrap:wrap;gap:8px;padding:10px 14px}
+  #brand{font-size:16px;flex:1 1 auto;min-width:0}
+  #chat-model{order:10;flex:1 1 170px;max-width:none}
+  #model{order:11;flex:1 1 170px;min-width:0}
+  .dot{margin-left:4px}
+}

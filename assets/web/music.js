@@ -1272,11 +1272,16 @@
         if (m && m.total_free_mib > 0) { FREE_GIB = m.total_free_mib / 1024; refreshModelLabels(); }
       });
       return api('/api/models/selection', undefined, 15000).then(function (s) {
-        if (s && s.id && !seen[normId(s.id)]) {
-          var o2 = document.createElement('option');
-          o2.value = s.id; o2.textContent = s.id; sel.appendChild(o2);
+        // Server selection is global (generation flips it to yue2!). Adopt it
+        // only when it names a chat-capable option; never import audio
+        // presets into the chat selector (20.10 portrait polish).
+        if (s && s.id) {
+          var want = normId(s.id), hit = null;
+          [].forEach.call(sel.options, function (o) {
+            if (normId(o.value) === want) hit = o.value;
+          });
+          if (hit) sel.value = hit;
         }
-        if (s && s.id) sel.value = s.id;
         markActive();
       });
     }).then(function () {
