@@ -1215,11 +1215,24 @@
   // prompt-urile de sistem exacte din mlx-serve (varianta yue2). Templates
   // = catalog built-in (exemplele mlx-serve) + salvare localStorage.
   var CHAT_MODELS = [
-    ['Ternary-Bonsai-2-27B-PTQ1_0.gguf', '\uD83E\uDD80 Bonsai 27B (ternary)'],
-    ['qwen3.8-9b-distill-q4-k-m.gguf', 'Qwen3.8 9B'],
-    ['Mistral-7B-Instruct-v0.3.Q4_0.gguf', 'Mistral 7B'],
-    ['MiniCPM5-2B-Q8_0.gguf', 'MiniCPM5 2B (fast)']
+    ['Ternary-Bonsai-2-27B-PTQ1_0.gguf', '\uD83C\uDF33 Bonsai 27B (ternary)', 5.95e9],
+    ['qwen3.8-9b-distill-q4-k-m.gguf', 'Qwen3.8 9B', 5.8e9],
+    ['Mistral-7B-Instruct-v0.3.Q4_0.gguf', 'Mistral 7B', 4.1e9],
+    ['MiniCPM5-2B-Q8_0.gguf', 'MiniCPM5 2B (fast)', 2.7e9]
   ];
+  var FREE_GIB = 0;
+  function modelLabel(base, size) {
+    var t = base + (size ? ' \u00b7 ' + (size / 1e9).toFixed(1) + ' GB' : '');
+    if (FREE_GIB > 0) t += ' \u00b7 liber ' + FREE_GIB.toFixed(1) + ' GB';
+    return t;
+  }
+  function refreshModelLabels() {
+    var sel = $('chat-model');
+    if (!sel) return;
+    [].forEach.call(sel.options, function (o) {
+      o.textContent = modelLabel(o.dataset.base || o.textContent, parseFloat(o.dataset.size || 0));
+    });
+  }
   function normId(x) { return String(x).toLowerCase().replace(/-/g, '_'); }
   function loadChatModels() {
     var sel = $('chat-model');
@@ -1229,12 +1242,16 @@
       var seen = {}, opts = [];
       CHAT_MODELS.forEach(function (m) { seen[normId(m[0])] = 1; opts.push(m); });
       ((d && d.data) || []).forEach(function (p) {
-        if (p.kind === 0 && !seen[normId(p.id)]) opts.push([p.id, p.name || p.id]);
+        if (p.kind === 0 && !seen[normId(p.id)]) opts.push([p.id, p.name || p.id, p.size || 0]);
       });
       sel.innerHTML = '';
       opts.forEach(function (m) {
         var o = document.createElement('option');
-        o.value = m[0]; o.textContent = m[1]; sel.appendChild(o);
+        o.value = m[0]; o.dataset.base = m[1]; o.dataset.size = m[2] || 0;
+        o.textContent = modelLabel(m[1], m[2] || 0); sel.appendChild(o);
+      });
+      api('/api/system/memory', undefined, 15000).then(function (m) {
+        if (m && m.total_free_mib > 0) { FREE_GIB = m.total_free_mib / 1024; refreshModelLabels(); }
       });
       return api('/api/models/selection', undefined, 15000).then(function (s) {
         if (s && s.id && !seen[normId(s.id)]) {
@@ -1338,7 +1355,7 @@
       if (st) user += '\n\nThe music style is:\n' + st;
       predict = 900;
     }
-    api('/api/chat', { model: chatModel || undefined, messages: [
+    api('/api/chat', { model: chatModel || undefined, unload_after: true, messages: [
       { role: 'system', content: sys }, { role: 'user', content: user }
     ], num_predict: predict, temperature: 0.2 }, 240000).then(function (j) {
       var out = stripWrap(j && j.message ? j.message.content : '');

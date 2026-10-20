@@ -14,6 +14,7 @@
 #include "model_paths.hpp"
 
 #include "gpt_runtime.hpp"
+#include "direct_memory.hpp"
 #include "runtime_settings.hpp"
 #include "chatterbox_languages.hpp"
 #include "generated_voice_catalog.hpp"
@@ -973,6 +974,16 @@ void handle_chat(const NetApi &api, int sock, const char *request_body)
     }
     const auto serialized = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     send_json(api, sock, serialized.c_str());
+    // Optional one-shot release: clients that use the chat model only for a
+    // quick task (e.g. the music studio Enhance button) ask for the model to
+    // leave memory right after the answer instead of waiting for the idle
+    // timer. check_idle_unload(0) releases the selected model when no
+    // generation holds the inference mutex; concurrent work skips it safely.
+#if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
+    if (const char *flag = json_value_start(request_body, "unload_after");
+        flag != nullptr && (*flag == 't' || *flag == 'T'))
+        gpt_runtime_check_idle_unload(0);
+#endif
 }
 
 #include "openai_api.inc"
@@ -2950,6 +2961,18 @@ void handle_connection(const NetApi &api, int sock)
         handle_jobs_get(api, sock, static_cast<unsigned>(std::atoi(path + 13)));
     else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/jobs") == 0)
         handle_jobs_list(api, sock);
+#if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
+    else if (std::strcmp(method, "GET") == 0 && std::strcmp(path, "/api/system/memory") == 0)
+    {
+        char mem[160]{};
+        std::snprintf(mem, sizeof(mem),
+                      "{\"total_free_mib\":%llu,\"largest_block_mib\":%llu,\"flexible_free_mib\":%llu}",
+                      static_cast<unsigned long long>(prospero_memory::free_total() >> 20),
+                      static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
+                      static_cast<unsigned long long>(prospero_memory::flexible_free() >> 20));
+        send_status(api, sock, "200 OK", "application/json", mem);
+    }
+#endif
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/chat") == 0)
         handle_chat(api, sock, body);
     else
