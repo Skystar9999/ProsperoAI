@@ -9,7 +9,8 @@
 <body>
 <header>
   <div id="brand">🎵 Prospero <span>Music Studio</span></div>
-  <span id="uiver" title="UI version">UI v30</span>
+  <a id="back-chat" href="/" title="Back to ProsperoAI chat" style="font-size:20px;text-decoration:none">💬</a>
+  <span id="uiver" title="UI version">UI v31</span>
   <select id="model" title="Music model"></select>
   <span id="status-dot" class="dot"></span>
 </header>
@@ -25,6 +26,7 @@ Write your lyrics here..."></textarea>
       <div id="abc-col">
         <label for="abc">ABC notation (optional)</label>
         <textarea id="abc" rows="8" placeholder="X:1&#10;M:2/4&#10;L:1/16&#10;K:C..."></textarea>
+        <div id="abc-status" hidden></div>
         <div id="abc-actions">
           <input id="abc-name" type="text" value="studio.abc">
           <button id="abc-save" type="button">Save ABC</button>

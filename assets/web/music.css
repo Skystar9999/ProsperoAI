@@ -85,3 +85,5 @@ h2 button{padding:3px 9px;font-size:13px}
 .track-settings{margin:2px 0 6px;font-size:12px;color:var(--dim)}
 .track-settings summary{cursor:pointer;word-break:break-word}
 .track-lyrics{white-space:pre-wrap;font-size:11px;color:var(--dim);margin:6px 0 0;max-height:180px;overflow:auto;font-family:inherit}
+
+#abc-status{font-size:12.5px;margin:4px 2px;color:#e8b339}#abc-status[data-cls="ok"]{color:#3fb950}#abc-status[data-cls="err"]{color:#f85149}

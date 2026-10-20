@@ -48,7 +48,12 @@
     var el = $('gen-status');
     el.textContent = msg || '';
     el.className = cls || '';
+  }  function setAbcStatus(msg, cls) {
+    var el = $('abc-status'); if (!el) return;
+    el.hidden = !msg; el.textContent = msg || '';
+    el.setAttribute('data-cls', cls || '');
   }
+
 
   // ---- models ----
   function loadModels() {
@@ -207,8 +212,8 @@
   // ---- Cover + ABC: one-click subtle-variation recipe from a library track.
   // Loads lyrics/style/seed/duration from the track's saved settings AND
   // transcribes the track to ABC on the console (SheetSage2), arming ABC
-  // conditioning for the next generation. Restart the app before GENERATE:
-  // SheetSage2 -> YuE2 in one session fragments the GPU heap (validated).
+  // conditioning for the next generation. Memory restarts (when the heap is
+  // fragmented) are automatic — the user never has to restart by hand.
   function coverAndAbc(meta, filename) {
     if (meta && Object.keys(meta).length) applyCover(meta, filename);
     var base = String(filename || '').replace(/\.(wav|mp3)$/i, '').replace(/_seed\d+$/i, '');
@@ -217,6 +222,8 @@
     var t0 = Date.now();
     var once = function (retry) {
       setStatus('Cover+ABC: transcribing ' + filename + ' with SheetSage2 (1-3 min, you can close the page)...', 'busy');
+      if (!$('abc').value.trim())
+        setAbcStatus('⏳ Generating ABC score — takes about a minute, it appears here automatically when ready…', 'busy');
       return api('/api/settings/runtime', { audio_options: 'input_audio=' + AUDIO_DIR + filename }, 30000)
         .then(function () {
           return api('/api/generate', { model: 'sheetsage2-orig', prompt: 'transcribe ' + filename }, 1800000);
@@ -225,6 +232,7 @@
           var resp = String(j.response || j.error || JSON.stringify(j).slice(0, 400));
           if (resp.indexOf('NEEDS_RESTART') >= 0 && retry > 0) {
             setStatus('GPU memory fragmented — restarting the PS5 app automatically (~20 s) and retrying...', 'busy');
+            setAbcStatus('⏳ Freeing GPU memory: restarting the app automatically (~20 s), then retrying…', 'busy');
             return restartTitle().then(function () { return once(retry - 1); });
           }
           var m = resp.match(/\/download0\/\S+?\.abc/);
@@ -236,6 +244,7 @@
           return r.text();
         }).then(function (t) {
           $('abc').value = t;
+          setAbcStatus('✓ Score ready — press GENERATE to use it (or edit it first).', 'ok');
           var abcName = base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60) + '-var.abc';
           $('abc-name').value = abcName;
           knownFiles[abcName] = true;
@@ -249,6 +258,8 @@
       });
     };
     once(2).catch(function (e) {
+      if (!$('abc').value.trim())
+        setAbcStatus('ABC generation failed — you can still generate from lyrics, or paste a score manually.', 'err');
       setStatus('Cover+ABC failed: ' + (e && e.message ? e.message : e), 'err');
     });
   }
