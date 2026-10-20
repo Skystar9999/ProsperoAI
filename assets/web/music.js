@@ -1069,7 +1069,11 @@
     var t0 = Date.now();
     return new Promise(function (res, rej) {
       (function tryUp() {
-        fetch('/api/models/presets').then(function (r) { if (r.ok) res(); else throw new Error('down'); })
+        // AbortController is mandatory here: on a slow/DERP tunnel a hung
+        // fetch would stall the whole restart cycle forever (20.10 bug).
+        var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        if (ctl) setTimeout(function () { ctl.abort(); }, 8000);
+        fetch('/api/models/presets', ctl ? { signal: ctl.signal } : {}).then(function (r) { if (r.ok) res(); else throw new Error('down'); })
           .catch(function () {
             if (Date.now() - t0 > limitMs) return rej(new Error('title did not come back in ' + Math.round(limitMs / 60000) + ' min'));
             setTimeout(tryUp, 4000);
@@ -1086,16 +1090,22 @@
     var host = location.hostname;
     setStatus('Restarting title: self-exit…', 'busy');
     var cycle = function () {
+      var mctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (mctl) setTimeout(function () { mctl.abort(); }, 12000);
       return fetch('http://' + host + ':10101/api/v1/games/mount', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title_id: TITLE_ID })
-      }).catch(function () { /* busy is fine, we retry */ })
+        body: JSON.stringify({ title_id: TITLE_ID }),
+        signal: mctl ? mctl.signal : undefined
+      }).catch(function () { /* busy or tunnel hiccup, we retry */ })
         .then(function () { return qdelay(1500); })
         .then(function () {
           // no-cors: websrv :8080 answers ACAO:* but NOT Private-Network
           // preflight — a CORS fetch from a LAN page never reaches it.
           // Opaque fire-and-forget is all launch needs.
-          return fetch('http://' + host + ':8080/launch?titleId=' + TITLE_ID, { mode: 'no-cors' })
+          var lctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          if (lctl) setTimeout(function () { lctl.abort(); }, 12000);
+          return fetch('http://' + host + ':8080/launch?titleId=' + TITLE_ID,
+            { mode: 'no-cors', signal: lctl ? lctl.signal : undefined })
             .catch(function () { /* 503 can still launch */ });
         })
         .then(function () { return waitUp(30000); });
@@ -1109,8 +1119,8 @@
           (function attempt() {
             tries++;
             cycle().then(res, function (e) {
-              if (tries >= 8) return rej(new Error('title did not come back after ' + tries + ' launch attempts'));
-              setStatus('Title still down — retrying mount+launch (' + tries + ')…', 'busy');
+              if (tries >= 20) return rej(new Error('title did not come back after ' + tries + ' launch attempts'));
+              setStatus('Title still down — retrying mount+launch (' + tries + '/20)…', 'busy');
               attempt();
             });
           })();
