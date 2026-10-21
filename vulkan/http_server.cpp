@@ -807,6 +807,7 @@ void prospero_arm_idle_defrag()
     // never joined on purpose: the worker either restarts the title or exits
     // after its deadline; there is one per boot at most.
 }
+} // namespace
 
 // Builds exactly the JSON that the synchronous /api/generate would send.
 std::string generate_response_json(const char *request_body)
