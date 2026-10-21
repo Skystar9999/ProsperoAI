@@ -177,12 +177,14 @@ def browser(host, clip, uiver=None, full=False):
         st = J("document.querySelector('#gen-status').textContent||''")
         if 'fail' in st.lower() or 'error' in st.lower():
             break
-        # same-origin list via in-page fetch (server clock is authoritative)
+        # same-origin list via in-page fetch (server clock is authoritative).
+        # STRICT pattern: YuE2 outputs are yue2-<ms>-<idx>.wav — excluding
+        # this is how a leftover *-mastered.wav caused a false PASS on Phat.
         names = J("""(async () => {
           const j = await fetch('/api/music/files').then(r=>r.json());
           const fl = Array.isArray(j) ? j : (j.files||[]);
           const t = Date.now()/1000 - 900;
-          return JSON.stringify(fl.filter(f=>f.name.endsWith('.wav') && !f.name.includes('-src') && f.mtime>t).map(f=>f.name));
+          return JSON.stringify(fl.filter(f=>/^yue2-\\d+-\\d+\\.wav$/.test(f.name) && f.mtime>t).map(f=>f.name));
         })()""")
         got = json.loads(names or '[]')
         if got:
