@@ -493,18 +493,34 @@
     masterBtn.addEventListener('click', function (e) {
       e.stopPropagation(); menu.style.display = 'none';
       var m0 = Date.now();
-      setStatus('Mastering ' + filename + ' (decode + normalize + limiter)...', 'busy');
-      masterTrack(url, function (msg) { setStatus(msg, 'busy'); }).then(function (rendered) {
-        var blob = encodeWav16(rendered);
-        var outName = filename.replace(/\.(wav|mp3)$/i, '') + '-mastered.wav';
-        var a2 = document.createElement('a');
-        a2.href = URL.createObjectURL(blob); a2.download = outName;
-        document.body.appendChild(a2); a2.click();
-        setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
-        setStatus('Mastered ' + outName + ' in ' + Math.round((Date.now() - m0) / 1000) +
-          's (' + fmtSize(blob.size) + ') — check your Downloads', 'ok');
+      var legacyMaster = function () {
+        setStatus('Mastering ' + filename + ' (decode + normalize + limiter)...', 'busy');
+        masterTrack(url, function (msg) { setStatus(msg, 'busy'); }).then(function (rendered) {
+          var blob = encodeWav16(rendered);
+          var outName = filename.replace(/\.(wav|mp3)$/i, '') + '-mastered.wav';
+          var a2 = document.createElement('a');
+          a2.href = URL.createObjectURL(blob); a2.download = outName;
+          document.body.appendChild(a2); a2.click();
+          setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 5000);
+          setStatus('Mastered ' + outName + ' in ' + Math.round((Date.now() - m0) / 1000) +
+            's (' + fmtSize(blob.size) + ') — check your Downloads', 'ok');
+        }).catch(function (err) {
+          setStatus('Master failed: ' + (err && err.message ? err.message : err), 'err');
+        });
+      };
+      // Console-side mastering (v54): survives a closed page and lands in
+      // the library. mp3 has no server decoder -> stays browser-side, and
+      // an old app (404 on the route) falls back to the old in-page DSP.
+      if (isMp3Source) { legacyMaster(); return; }
+      setStatus('Mastering on the console (normalize + limiter)...', 'busy');
+      api('/api/music/master', { file: filename }, 300000).then(function (j) {
+        loadLibrary();
+        setStatus('Mastered ' + j.out + ' in ' + Math.round((Date.now() - m0) / 1000) +
+          's — saved to the library, play it right away', 'ok');
       }).catch(function (err) {
-        setStatus('Master failed: ' + (err && err.message ? err.message : err), 'err');
+        var msg = err && err.message ? err.message : String(err);
+        if (/HTTP 404/.test(msg)) { legacyMaster(); return; }
+        setStatus('Master failed: ' + msg.slice(0, 160), 'err');
       });
     });
     // PS5-side separation: htdemucs runs on the console's GPU through the

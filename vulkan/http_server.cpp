@@ -2841,6 +2841,256 @@ void handle_music_rename(const NetApi &api, int sock, const char *body)
     std::rename(side_from.c_str(), side_to.c_str());
     send_json(api, sock, nlohmann::json{{"ok", true}, {"renamed", dst}}.dump().c_str());
 }
+
+// Server-side mastering (UI v54). The browser DSP was the only flow that
+// died with the page: a phone decoding a 20 MB wav in the tab, renderer
+// crash = master lost, and the download never survives a dropped network.
+// The console does it now: peak-normalize (gain = min(0.89/peak, 12), the
+// exact old WebAudio chain) then a soft-knee limiter approximating the
+// DynamicsCompressor(thr -6 dB, knee 4, ratio 16) the page used. Raw float
+// DSP on PCM is a fraction of a second here, so the call is synchronous.
+// Supports PCM 16/24-bit int + IEEE 32-bit float WAVs; mp3 stays browser-side.
+bool prospero_master_wav(const std::string &in_path, const std::string &out_path,
+                         char *err, std::size_t err_sz)
+{
+    std::snprintf(err, err_sz, "not a supported WAV");
+    std::FILE *f = std::fopen(in_path.c_str(), "rb");
+    if (!f)
+    {
+        std::snprintf(err, err_sz, "input not readable");
+        return false;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long file_sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    char riff[4] = {}, wave[4] = {};
+    if (file_sz < 44 || std::fread(riff, 1, 4, f) != 4 || std::fseek(f, 4, SEEK_CUR) != 0 ||
+        std::fread(wave, 1, 4, f) != 4 ||
+        std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0)
+    {
+        std::fclose(f);
+        return false;
+    }
+    unsigned fmt = 0, chans = 0, bits = 0, rate = 0;
+    long data_off = -1;
+    unsigned long data_sz = 0;
+    for (;;)
+    {
+        char id[4];
+        unsigned sz = 0;
+        if (std::fread(id, 1, 4, f) != 4 || std::fread(&sz, 1, 4, f) != 4)
+            break;
+        const long body = std::ftell(f);
+        if (std::memcmp(id, "fmt ", 4) == 0)
+        {
+            unsigned char b[40] = {0};
+            const unsigned want = sz < 40u ? sz : 40u;
+            if (std::fread(b, 1, want, f) != want)
+                break;
+            fmt = static_cast<unsigned>(b[0] | (b[1] << 8));
+            chans = static_cast<unsigned>(b[2] | (b[3] << 8));
+            rate = static_cast<unsigned>(b[4] | (b[5] << 8) | (b[6] << 16) |
+                                         (static_cast<unsigned>(b[7]) << 24));
+            bits = static_cast<unsigned>(b[14] | (b[15] << 8));
+            // WAVE_FORMAT_EXTENSIBLE (ffmpeg writes it for 24-bit): the real
+            // codec lives at offset 24 of the fmt chunk.
+            if (fmt == 0xFFFEu && sz >= 26u)
+                fmt = static_cast<unsigned>(b[24] | (b[25] << 8));
+        }
+        else if (std::memcmp(id, "data", 4) == 0)
+        {
+            data_off = body;
+            data_sz = sz;
+        }
+        if (fmt && chans && rate && data_off >= 0)
+            break;
+        // always advance past the whole (even-padded) chunk body
+        if (std::fseek(f, body + static_cast<long>((sz + 1u) & ~1u), SEEK_SET) != 0)
+            break;
+    }
+    if ((fmt != 1 && fmt != 3) || chans < 1 || chans > 2 ||
+        (bits != 16 && bits != 24 && bits != 32) || data_off < 0 || rate == 0)
+    {
+        std::fclose(f);
+        return false;
+    }
+    const unsigned bps = bits / 8u;
+    const unsigned long frame_bytes = bps * chans;
+    if (frame_bytes == 0)
+    {
+        std::fclose(f);
+        return false;
+    }
+    // Some encoders leave data size bogus; clamp to the file.
+    const long avail = file_sz - data_off;
+    if (data_sz == 0 || data_sz > static_cast<unsigned long>(avail))
+        data_sz = static_cast<unsigned long>(avail);
+    const std::size_t n = data_sz / frame_bytes;  // frames
+    if (n == 0)
+    {
+        std::fclose(f);
+        return false;
+    }
+    std::vector<unsigned char> raw(data_sz & ~1u);
+    std::fseek(f, data_off, SEEK_SET);
+    const std::size_t got = std::fread(raw.data(), 1, raw.size(), f);
+    std::fclose(f);
+    if (got < raw.size())
+    {
+        std::snprintf(err, err_sz, "truncated data chunk");
+        return false;
+    }
+    std::vector<float> s(n * chans);
+    for (std::size_t i = 0; i < n * chans; ++i)
+    {
+        const unsigned char *p = raw.data() + i * bps;
+        if (bits == 16)
+            s[i] = static_cast<float>(static_cast<std::int16_t>(p[0] | (p[1] << 8))) / 32768.0f;
+        else if (bits == 24)
+        {
+            std::int32_t v = static_cast<std::int32_t>(p[0] | (p[1] << 8) | (p[2] << 16));
+            if (v & 0x800000)
+                v |= ~0xFFFFFF;
+            s[i] = static_cast<float>(v) / 8388608.0f;
+        }
+        else
+        {
+            std::uint32_t u = p[0] | (p[1] << 8) | (p[2] << 16) |
+                             (static_cast<std::uint32_t>(p[3]) << 24);
+            float fv;
+            std::memcpy(&fv, &u, 4);
+            s[i] = std::isfinite(fv) ? fv : 0.0f;
+        }
+    }
+    float peak = 0.0f;
+    for (const float v : s)
+    {
+        const float a = v < 0.0f ? -v : v;
+        if (a > peak)
+            peak = a;
+    }
+    if (peak < 0.001f)
+    {
+        std::snprintf(err, err_sz, "audio is silent");
+        return false;
+    }
+    const double gain = (0.89 / peak) < 12.0 ? (0.89 / peak) : 12.0;
+    const double thr = 0.50119;  // -6 dB, where the old compressor kicked in
+    for (float &v : s)
+    {
+        double x = v * gain;
+        if (x > thr || x < -thr)
+        {
+            const double a = x < 0.0 ? -x : x;
+            const double soft = thr + (1.0 - thr) * std::tanh((a - thr) / (1.0 - thr));
+            x = x < 0.0 ? -soft : soft;
+        }
+        // WebAudio's DynamicsCompressor rides ~3.3 dB of makeup gain on top
+        // (measured against the old browser master of the same clip:
+        // RMS 0.147 vs 0.100 without it). Apply it, then tame the new
+        // overshoots with a soft ceiling so peaks stay under 0 dBFS.
+        x *= 1.46;
+        if (x > 0.9 || x < -0.9)
+        {
+            const double a = x < 0.0 ? -x : x;
+            const double soft = 0.9 + 0.1 * std::tanh((a - 0.9) / 0.1);
+            x = x < 0.0 ? -soft : soft;
+        }
+        if (x > 0.999) x = 0.999;
+        if (x < -0.999) x = -0.999;
+        v = static_cast<float>(x);
+    }
+    // Write back as 16-bit PCM.
+    const std::size_t data_bytes = n * chans * 2;
+    std::FILE *o = std::fopen(out_path.c_str(), "wb");  // overwrite by convention
+    if (!o)
+    {
+        std::snprintf(err, err_sz, "cannot open output");
+        return false;
+    }
+    unsigned char hdr[44];
+    auto put32 = [&](int at, unsigned v) {
+        hdr[at] = v & 0xFF; hdr[at+1] = (v >> 8) & 0xFF; hdr[at+2] = (v >> 16) & 0xFF;
+        hdr[at+3] = (v >> 24) & 0xFF;
+    };
+    auto put16 = [&](int at, unsigned v) { hdr[at] = v & 0xFF; hdr[at+1] = (v >> 8) & 0xFF; };
+    std::memcpy(hdr, "RIFF", 4); put32(4, 36u + static_cast<unsigned>(data_bytes));
+    std::memcpy(hdr + 8, "WAVEfmt ", 8); put32(16, 16);
+    put16(20, 1); put16(22, chans); put32(24, rate);
+    put32(28, rate * chans * 2); put16(32, chans * 2); put16(34, 16);
+    std::memcpy(hdr + 36, "data", 4); put32(40, static_cast<unsigned>(data_bytes));
+    std::fwrite(hdr, 1, 44, o);
+    std::vector<std::int16_t> out16(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i)
+        out16[i] = static_cast<std::int16_t>(s[i] * 32767.0f);
+    std::fwrite(out16.data(), 2, out16.size(), o);
+    const bool ok = std::fclose(o) == 0;
+    if (!ok)
+        std::snprintf(err, err_sz, "write failed");
+    return ok;
+}
+
+void handle_music_master(const NetApi &api, int sock, const char *body)
+{
+    const auto j = body != nullptr && *body != '\0'
+                       ? nlohmann::json::parse(body, nullptr, false)
+                       : nlohmann::json();
+    if (!j.is_object() || !j.contains("file") || !j["file"].is_string())
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name", "Expected {file}.");
+        return;
+    }
+    const std::string name = j["file"].get<std::string>();
+    if (name.size() < 5 || name.size() > 96 || name.find("..") != std::string::npos ||
+        name.compare(name.size() - 4, 4, ".wav") != 0)
+    {
+        openai_error(api, sock, "400 Bad Request", "invalid_name",
+                     "Mastering takes a plain *.wav file name (mp3 masters in the browser).");
+        return;
+    }
+    for (const char c : name)
+    {
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!allowed)
+        {
+            openai_error(api, sock, "400 Bad Request", "invalid_name", name.c_str());
+            return;
+        }
+    }
+    const std::string dir = "/download0/ProsperoAI/work/audio/";
+    const std::string in_path = dir + name;
+    const std::string base = name.substr(0, name.rfind('.'));
+    const std::string out_name = base + "-mastered.wav";
+    const std::string out_path = dir + out_name;
+    if (::access(in_path.c_str(), F_OK) != 0)
+    {
+        openai_error(api, sock, "404 Not Found", "not_found", name.c_str());
+        return;
+    }
+    char err[96] = {};
+    if (!prospero_master_wav(in_path, out_path, err, sizeof(err)))
+    {
+        openai_error(api, sock, "422 Unprocessable Entity", "master_failed", err);
+        return;
+    }
+    // best effort: the metadata sidecar follows the track
+    const std::string side_from = dir + base + ".track.json";
+    const std::string side_to = dir + base + "-mastered.track.json";
+    if (std::FILE *sf = std::fopen(side_from.c_str(), "rb"))
+    {
+        if (std::FILE *st = std::fopen(side_to.c_str(), "wb"))
+        {
+            char buf[4096];
+            std::size_t r;
+            while ((r = std::fread(buf, 1, sizeof(buf), sf)) > 0)
+                std::fwrite(buf, 1, r, st);
+            std::fclose(st);
+        }
+        std::fclose(sf);
+    }
+    send_json(api, sock, nlohmann::json{{"ok", true}, {"out", out_name}}.dump().c_str());
+}
 #endif
 
 void handle_connection(const NetApi &api, int sock)
@@ -2937,6 +3187,8 @@ void handle_connection(const NetApi &api, int sock)
         handle_music_upload(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/rename") == 0)
         handle_music_rename(api, sock, body);
+    else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/music/master") == 0)
+        handle_music_master(api, sock, body);
     else if (std::strcmp(method, "DELETE") == 0 && std::strcmp(path, "/api/music/file") == 0)
         handle_music_delete(api, sock, body);
     else if (std::strcmp(method, "POST") == 0 && std::strcmp(path, "/api/system/restart") == 0) {
