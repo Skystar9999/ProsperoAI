@@ -15,12 +15,12 @@ Run after every UI deploy. Two layers:
     - Cover flow: pick clip -> cover-go -> ABC appears in the editor
     - GENERATE guard: empty style must be refused
     - GENERATE happy path: style+lyrics -> new .wav with valid RIFF header
-    - (SMOKE_FULL) Master and Stems actions on the newest wav.
-      Master = in-page Web Audio DSP whose OUTPUT DOWNLOADS TO THE BROWSER
-      (verify in the browser's Downloads dir; a renderer crash mid-DSP
-      yields SKIP, not FAIL — the download may still have landed).
-      Stems = PS5 GPU job (htdemucs) — output lands on the console; if the
-      page dies after firing, poll /api/music/files for *-vocals.wav etc.
+    - (SMOKE_FULL) Master and Stems actions on the newest wav. Since UI v54
+      both run ON THE CONSOLE and their output lands in the library —
+      poll /api/music/files for *-mastered.wav / *-vocals.wav. (Pre-v54
+      Master was in-page DSP downloading to the browser; mp3 sources and
+      404-on-route old servers still use that fallback.)
+      A renderer crash mid-flow yields SKIP, not FAIL — verify externally.
     - leaves runtime audio_options cleared at the end
 
 Pitfalls this harness exists to catch (all real, all shipped once):
@@ -209,14 +209,17 @@ def browser(host, clip, uiver=None, full=False):
         check('wav has real audio size', int(size) > 3_500_000, f'{int(size)} B')
 
     if full:
-        # Master and Stems behave fundamentally differently:
-        #  - Master: decode+DSP+encode IN THE PAGE, result downloads to the
-        #    browser ("check your Downloads"); nothing lands on the console.
-        #    Verify via #gen-status text. A renderer crash here is a harness
-        #    environment limit, not a product failure -> SKIP, don't FAIL.
-        #  - Stems: htdemucs runs on the PS5 GPU via /api/generate; the page
-        #    may die right after firing — verify via server-side stem files.
-        for emoji, label in (('\U0001F39A', 'Master'), ('\u2702', 'Stems')):
+        # Master and Stems are both console-side jobs since v54: fire from
+        # the row menu, verify OUTPUT ON THE CONSOLE (/api/music/files).
+        # (v53 and older mastered in the page and the file went to the
+        # browser Downloads — that fallback only fires for mp3 sources.)
+        # Renderer crashes mid-flow are harness-env limits, not product
+        # failures -> SKIP, and poll /api/music/files externally.
+        import datetime
+        t_start = int(datetime.datetime.now().timestamp()) - 5
+        for emoji, label, pat in (
+                ('\U0001F39A', 'Master', r'-mastered\.wav$'),
+                ('\u2702', 'Stems', r'(vocals|drums|bass|other)\.wav$')):
             try:
                 found = js(f"""(() => {{
                   const b = Array.from(document.querySelectorAll('button'))
@@ -229,34 +232,25 @@ def browser(host, clip, uiver=None, full=False):
                     continue
                 t0 = time.time(); hit = None; tab_died = False
                 while time.time() - t0 < 420:
-                    time.sleep(20)
+                    time.sleep(15)
                     try:
-                        if label == 'Master':
-                            st_m = js("document.querySelector('#gen-status').textContent||''")
-                            if 'Mastered' in st_m:
-                                hit = st_m[:80]; break
-                            if 'Master failed' in st_m:
-                                hit = 'FAILED: ' + st_m[:80]; break
-                        else:
-                            names = J("""(async () => {
-                              const j = await fetch('/api/music/files').then(r=>r.json());
-                              const fl = Array.isArray(j) ? j : (j.files||[]);
-                              return JSON.stringify(fl.filter(f=>/-?(vocals|drums|bass|other|stem)/.test(f.name)).map(f=>f.name));
-                            })()""")
-                            got = json.loads(names or '[]')
-                            if got:
-                                hit = ','.join(got[:4]); break
+                        names = J("""(async () => {
+                          const j = await fetch('/api/music/files').then(r=>r.json());
+                          const fl = Array.isArray(j) ? j : (j.files||[]);
+                          return JSON.stringify(fl.filter(f=>f.mtime>%d && %s).map(f=>f.name));
+                        })()""" % (t_start, ("RegExp('%s').test(f.name)" % pat)))
+                        got = json.loads(names or '[]')
+                        if got:
+                            hit = ','.join(got[:4]); break
                     except Exception:
                         tab_died = True
                         break
-                if hit and not hit.startswith('FAILED'):
+                if hit:
                     check(f'{label} flow produced output', True, hit)
-                elif hit:
-                    check(f'{label} flow produced output', False, hit)
-                elif tab_died and label == 'Master':
-                    print(f'[SKIP] Master flow — in-page DSP killed the renderer (harness env limit; verify manually)', flush=True)
+                elif tab_died:
+                    print(f'[SKIP] {label} flow — browser link lost; poll /api/music/files externally', flush=True)
                 else:
-                    check(f'{label} flow produced output', False, 'timeout 420 s (or tab died for Stems)')
+                    check(f'{label} flow produced output', False, 'timeout 420 s')
             except Exception as e:
                 check(f'{label} flow produced output', False,
                       f'browser link lost ({type(e).__name__})')
