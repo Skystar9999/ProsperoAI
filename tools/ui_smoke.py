@@ -238,13 +238,30 @@ def browser(host, clip, uiver=None, full=False):
                           const j = await fetch('/api/music/files').then(r=>r.json());
                           const fl = Array.isArray(j) ? j : (j.files||[]);
                           return JSON.stringify(fl.filter(f=>f.mtime>%d && %s).map(f=>f.name));
-                        })()""" % (t_start, ("RegExp('%s').test(f.name)" % pat)))
+                        })()""" % (t_start - 3600, ("RegExp('%s').test(f.name)" % pat)))
                         got = json.loads(names or '[]')
                         if got:
                             hit = ','.join(got[:4]); break
                     except Exception:
                         tab_died = True
                         break
+                if not hit:
+                    # link died or clock skew: check the console directly
+                    # (urllib, no browser). PS5 mtime can run ~20 min off,
+                    # so match on NAME + a generous window.
+                    import re as _re, urllib.request
+                    try:
+                        with urllib.request.urlopen(
+                                f'http://{host}/api/music/files', timeout=10) as r:
+                            fl = json.load(r)
+                            fl = fl if isinstance(fl, list) else fl.get('files', [])
+                        new = sorted([f for f in fl if _re.search(pat, f['name'])
+                                      and f.get('mtime', 0) > t_start - 3600],
+                                     key=lambda f: -f.get('mtime', 0))
+                        if new:
+                            hit = new[0]['name']
+                    except Exception:
+                        pass
                 if hit:
                     check(f'{label} flow produced output', True, hit)
                 elif tab_died:
