@@ -883,6 +883,7 @@
       el.className = c || '';
     };
     var wav = null, name = '';
+    var rate = 16000;
     cstatus('Decoding ' + file.name + '...', 'busy');
     file.arrayBuffer().then(function (buf) {
       var AC = window.AudioContext || window.webkitAudioContext;
@@ -892,7 +893,6 @@
       var p = ctx.decodeAudioData(buf);
       return p.then(function (ab) { return ab; });
     }).then(function (ab) {
-      var rate = 16000;
       var frames = Math.max(1, Math.ceil(ab.duration * rate));
       if (frames > 300 * rate) throw new Error('audio longer than 5 min — trim it first');
       var off = new OfflineAudioContext(1, frames, rate);
