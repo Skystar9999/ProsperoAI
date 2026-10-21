@@ -50,4 +50,6 @@ export MESON="$host/venv/bin/meson" NINJA=/usr/bin/ninja
 export PATH="$host/bin:$host/venv/bin:/usr/lib/llvm-19/bin:$PATH"
 export CC=clang-19 CXX=clang++-19
 export CMAKE_PREFIX_PATH="/usr/lib/llvm-19${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+# debug CI failure: show the whole meson setup log when setup fails
+sed -i 's/tail -20 "$build.setup.log"/cat "$build.setup.log"/' "$ref/tools/build-radv.sh"
 bash "$ref/tools/build-radv.sh" release
