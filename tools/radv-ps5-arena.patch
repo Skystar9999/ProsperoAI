@@ -1,4 +1,4 @@
-From 1d09e7a8f542c34a8f99c28673750c0d9e283c70 Mon Sep 17 00:00:00 2001
+From f542828a61a20618b185d62282df8889bf27da3a Mon Sep 17 00:00:00 2001
 From: "Adrian (PS5LM)" <adrian@abar.ro>
 Date: Wed, 21 Oct 2026 08:04:17 +0300
 Subject: [PATCH] radv/ps5: carve small buffers from arenas to keep the kernel
@@ -18,12 +18,12 @@ handful of huge segments; freed granules coalesce inside the arena for the
 next small buffer. A sub-block's physical is the arena's offset to it, so
 sparse binds and placed mappings still reach exactly its pages.
 ---
- src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 206 ++++++++++++++++++
+ src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 223 ++++++++++++++++++
  src/amd/vulkan/winsys/ps5/radv_ps5_platform.h |   8 +
- 2 files changed, 214 insertions(+)
+ 2 files changed, 231 insertions(+)
 
 diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
-index 98783e37036..8690dc0f243 100644
+index 98783e37036..f61f2722f28 100644
 --- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 +++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 @@ -210,6 +210,42 @@ radv_ps5_window_contains(uint64_t address, uint64_t bytes)
@@ -78,7 +78,7 @@ index 98783e37036..8690dc0f243 100644
     /* RADV's shader cache in the title's own folder, as ps5vk kept its compiled
      * shaders there (ps5vk-shader-cache), in the database form, which needs no
      * file mapping. A title may choose otherwise, as on Linux. */
-@@ -286,8 +324,167 @@ radv_ps5_memory_available_bytes(void)
+@@ -286,8 +324,184 @@ radv_ps5_memory_available_bytes(void)
     return available;
  }
  
@@ -230,6 +230,23 @@ index 98783e37036..8690dc0f243 100644
 +      memmove(&a->run_count[at + 1], &a->run_count[at + 2], (a->runs - at - 2) * sizeof(uint32_t));
 +      a->runs--;
 +   }
++   /* An arena holding nothing is just a 256 MiB island in the physical pool:
++    * a big contiguous request would fail across it. Hand the whole segment
++    * back so the pool can defragment; the next small churn makes a new one. */
++   struct radv_ps5_memory dying = a->mem;
++   const uint32_t dying_slot = memory->arena_slot;
++   if (a->runs == 1 && a->run_start[0] == 0 && a->run_count[0] == RADV_PS5_ARENA_GRANULES) {
++      a->live = false;
++      *a = (struct radv_ps5_arena){0};
++      simple_mtx_unlock(&radv_ps5_arena_lock);
++      fprintf(stderr, "radv/ps5: arena %u emptied, segment returned\n", dying_slot);
++      sceKernelMunmap(dying.cpu, dying.bytes);
++      if (dying.granules)
++         radv_ps5_granules_give(&radv_ps5_region, dying.granule, dying.granules);
++      if (dying.physical >= 0)
++         sceKernelReleaseDirectMemory(dying.physical, dying.bytes);
++      return;
++   }
 +   simple_mtx_unlock(&radv_ps5_arena_lock);
 +}
 +
@@ -246,7 +263,7 @@ index 98783e37036..8690dc0f243 100644
  {
     *out = (struct radv_ps5_memory){.physical = -1};
     bytes = align64(MAX2(bytes, 1), RADV_PS5_PAGE_BYTES);
-@@ -626,6 +823,15 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
+@@ -626,6 +840,15 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
  {
     if (!memory->cpu)
        return;
