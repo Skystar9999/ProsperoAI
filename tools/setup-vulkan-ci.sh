@@ -28,6 +28,12 @@ else
  echo "$arena_hash" > "$stamp"
 fi
 sed -i "s/^mesa_revision=.*/mesa_revision=$(git -C "$mesa" rev-parse HEAD)/" "$ref/tools/build-radv.sh"
+# debug #36: the radv step died inside a meson setup whose log tail showed no
+# error line — show the whole setup log and name the step that failed.
+sed -i 's/tail -20 "\$clc_build.setup.log"/echo "[ci] clc meson setup failed:"; cat "$clc_build.setup.log"/;
+        s/tail -20 "\$build.setup.log"/echo "[ci] radv meson setup failed:"; cat "$build.setup.log"/g;
+        s|export PATH="\$clc_bin:\$PATH"|export PATH="$clc_bin:$PATH"\necho "[ci] clc tools built"|;
+        s|"\$meson" configure "\$build"|echo "[ci] meson configure for build-id"; "$meson" configure "$build"|' "$ref/tools/build-radv.sh"
 export PS5_PAYLOAD_SDK_FORK="$root/.deps/mihawk-sdk-review"
 export PS5_MESA_FORK="$root/.deps/mihawk-mesa-review"
 bash "$ref/tools/setup-native-dependencies.sh"
