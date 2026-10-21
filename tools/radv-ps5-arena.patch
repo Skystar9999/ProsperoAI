@@ -1,4 +1,4 @@
-From 9763095d0ca61d39d3ebf0d474b29643c3a06208 Mon Sep 17 00:00:00 2001
+From a25618438ccfe014e30df54ef3b1ab7a50be21ac Mon Sep 17 00:00:00 2001
 From: "Adrian (PS5LM)" <adrian@abar.ro>
 Date: Wed, 21 Oct 2026 08:04:17 +0300
 Subject: [PATCH] radv/ps5: carve small buffers from arenas to keep the kernel
@@ -18,12 +18,12 @@ handful of huge segments; freed granules coalesce inside the arena for the
 next small buffer. A sub-block's physical is the arena's offset to it, so
 sparse binds and placed mappings still reach exactly its pages.
 ---
- src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 199 ++++++++++++++++++
+ src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 206 ++++++++++++++++++
  src/amd/vulkan/winsys/ps5/radv_ps5_platform.h |   8 +
- 2 files changed, 207 insertions(+)
+ 2 files changed, 214 insertions(+)
 
 diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
-index 98783e37036..eda54b2bc2f 100644
+index 98783e37036..0c8f35538de 100644
 --- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 +++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 @@ -210,6 +210,42 @@ radv_ps5_window_contains(uint64_t address, uint64_t bytes)
@@ -78,7 +78,7 @@ index 98783e37036..eda54b2bc2f 100644
     /* RADV's shader cache in the title's own folder, as ps5vk kept its compiled
      * shaders there (ps5vk-shader-cache), in the database form, which needs no
      * file mapping. A title may choose otherwise, as on Linux. */
-@@ -286,8 +324,162 @@ radv_ps5_memory_available_bytes(void)
+@@ -286,8 +324,167 @@ radv_ps5_memory_available_bytes(void)
     return available;
  }
  
@@ -151,6 +151,8 @@ index 98783e37036..eda54b2bc2f 100644
 +               .arena_sub = true,
 +               .arena_slot = i,
 +            };
++            fprintf(stderr, "radv/ps5: arena %u sub %u+%u va %%" PRIu64 " phys %lld\n", i, start, need,
++                    (uint64_t)(uintptr_t)out->cpu, (long long)out->physical);
 +            simple_mtx_unlock(&radv_ps5_arena_lock);
 +            return true;
 +         }
@@ -177,8 +179,11 @@ index 98783e37036..eda54b2bc2f 100644
 +      a->creating = false;
 +      if (!made) {
 +         a->burned = true;
++         fprintf(stderr, "radv/ps5: arena %u could not be made, burned\n", slot);
 +         continue;
 +      }
++      fprintf(stderr, "radv/ps5: arena %u made at va %%" PRIu64 " phys %lld\n", slot,
++              (uint64_t)(uintptr_t)a->mem.cpu, (long long)a->mem.physical);
 +      a->window32 = window32;
 +      a->run_start[0] = 0;
 +      a->run_count[0] = RADV_PS5_ARENA_GRANULES;
@@ -241,13 +246,15 @@ index 98783e37036..eda54b2bc2f 100644
  {
     *out = (struct radv_ps5_memory){.physical = -1};
     bytes = align64(MAX2(bytes, 1), RADV_PS5_PAGE_BYTES);
-@@ -626,6 +818,13 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
+@@ -626,6 +823,15 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
  {
     if (!memory->cpu)
        return;
 +   if (memory->arena_sub) {
 +      /* Back to its arena: the granules are mapped and physical for good, so
 +       * the kernel pool neither gains a hole nor loses one. */
++      fprintf(stderr, "radv/ps5: arena %u give back %u at %u\n", memory->arena_slot, memory->granules,
++              memory->granule);
 +      radv_ps5_arena_give(memory);
 +      *memory = (struct radv_ps5_memory){.physical = -1};
 +      return;
