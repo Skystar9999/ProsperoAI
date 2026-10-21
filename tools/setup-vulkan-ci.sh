@@ -11,11 +11,21 @@ ref="$root/.deps/mihawk-vulkan-review"
 # committed inside the checkout and the recipe's pin has to name that commit.
 # A restored cache keeps both, hence the guard.
 mesa="$root/.deps/mihawk-mesa-review"
-if ! grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c"; then
+stamp="$root/.deps/.radv-arena-stamp"
+arena_hash=$(sha256sum "$root/tools/radv-ps5-arena.patch" | cut -d' ' -f1)
+if grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c" &&
+   [ "$(cat "$stamp" 2>/dev/null)" = "$arena_hash" ]; then
+ echo "arena patch already present at $(git -C "$mesa" rev-parse --short HEAD)"
+else
+ if grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c"; then
+  # a stale arena commit from a previous patch revision: drop it, then re-apply
+  git -C "$mesa" reset -q --hard HEAD~1
+ fi
  git -C "$mesa" -c user.email=ci@quatrix.one -c user.name="ProsperoAI CI" \
    am -q "$root/tools/radv-ps5-arena.patch"
  grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c" ||
   { echo "the arena patch did not land in $mesa" >&2; exit 1; }
+ echo "$arena_hash" > "$stamp"
 fi
 sed -i "s/^mesa_revision=.*/mesa_revision=$(git -C "$mesa" rev-parse HEAD)/" "$ref/tools/build-radv.sh"
 export PS5_PAYLOAD_SDK_FORK="$root/.deps/mihawk-sdk-review"
