@@ -75,7 +75,7 @@ struct vk_slab_pool {
     std::vector<vk_slab *> slabs;
     std::size_t total = 0;
     static constexpr std::size_t slab_size = 256ull << 20;
-    static constexpr std::size_t max_alloc = 64ull << 20;
+    static constexpr std::size_t max_alloc = 0;  // disabled: slabs pinned 256 MiB host maps and starved the app heap
     static constexpr std::size_t max_total = 3ull << 30;
 };
 
