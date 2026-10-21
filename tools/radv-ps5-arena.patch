@@ -1,4 +1,4 @@
-From b6dc7b7882cd62a19ba981ae4682d7a75de85964 Mon Sep 17 00:00:00 2001
+From 9763095d0ca61d39d3ebf0d474b29643c3a06208 Mon Sep 17 00:00:00 2001
 From: "Adrian (PS5LM)" <adrian@abar.ro>
 Date: Wed, 21 Oct 2026 08:04:17 +0300
 Subject: [PATCH] radv/ps5: carve small buffers from arenas to keep the kernel
@@ -18,12 +18,12 @@ handful of huge segments; freed granules coalesce inside the arena for the
 next small buffer. A sub-block's physical is the arena's offset to it, so
 sparse binds and placed mappings still reach exactly its pages.
 ---
- src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 192 ++++++++++++++++++
+ src/amd/vulkan/winsys/ps5/radv_ps5_platform.c | 199 ++++++++++++++++++
  src/amd/vulkan/winsys/ps5/radv_ps5_platform.h |   8 +
- 2 files changed, 200 insertions(+)
+ 2 files changed, 207 insertions(+)
 
 diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
-index 98783e37036..3e1f0831d78 100644
+index 98783e37036..eda54b2bc2f 100644
 --- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 +++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
 @@ -210,6 +210,42 @@ radv_ps5_window_contains(uint64_t address, uint64_t bytes)
@@ -78,7 +78,7 @@ index 98783e37036..3e1f0831d78 100644
     /* RADV's shader cache in the title's own folder, as ps5vk kept its compiled
      * shaders there (ps5vk-shader-cache), in the database form, which needs no
      * file mapping. A title may choose otherwise, as on Linux. */
-@@ -286,8 +324,155 @@ radv_ps5_memory_available_bytes(void)
+@@ -286,8 +324,162 @@ radv_ps5_memory_available_bytes(void)
     return available;
  }
  
@@ -88,6 +88,13 @@ index 98783e37036..3e1f0831d78 100644
 +static bool
 +radv_ps5_arena_take(uint64_t bytes, uint64_t alignment, bool window32, struct radv_ps5_memory *out)
 +{
++   /* Window buffers stay dedicated: an arena mapped in the 4 GiB window took
++    * virtual room the application's own heap grows into, and its next big
++    * host allocation failed ("Internal Memory is running out"). The kernel
++    * places window mappings where it likes; the port may not grab a 256 MiB
++    * slice of that space behind the application's back. */
++   if (window32)
++      return false;
 +   bytes = align64(MAX2(bytes, 1), RADV_PS5_PAGE_BYTES);
 +   if (bytes >= RADV_PS5_ARENA_CUTOFF)
 +      return false;
@@ -234,7 +241,7 @@ index 98783e37036..3e1f0831d78 100644
  {
     *out = (struct radv_ps5_memory){.physical = -1};
     bytes = align64(MAX2(bytes, 1), RADV_PS5_PAGE_BYTES);
-@@ -626,6 +811,13 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
+@@ -626,6 +818,13 @@ radv_ps5_memory_free(struct radv_ps5_memory *memory)
  {
     if (!memory->cpu)
        return;
