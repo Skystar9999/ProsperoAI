@@ -11,10 +11,10 @@ ref="$root/.deps/mihawk-vulkan-review"
 # committed inside the checkout and the recipe's pin has to name that commit.
 # A restored cache keeps both, hence the guard.
 mesa="$root/.deps/mihawk-mesa-review"
-if ! grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h"; then
+if ! grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c"; then
  git -C "$mesa" -c user.email=ci@quatrix.one -c user.name="ProsperoAI CI" \
    am -q "$root/tools/radv-ps5-arena.patch"
- grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h" ||
+ grep -q RADV_PS5_ARENA_CUTOFF "$mesa/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c" ||
   { echo "the arena patch did not land in $mesa" >&2; exit 1; }
 fi
 sed -i "s/^mesa_revision=.*/mesa_revision=$(git -C "$mesa" rev-parse HEAD)/" "$ref/tools/build-radv.sh"
