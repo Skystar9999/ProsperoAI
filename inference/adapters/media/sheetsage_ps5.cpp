@@ -445,23 +445,23 @@ extern "C" int ps5_sheetsage_transcribe(const char *root, const char *prompt, ch
                       "audio/<file>.wav'");
         return 1;
     }
-    // Contiguous-memory gate: SheetSage needs ~2.7 GiB of weights loaded into
-    // the direct pool FIRST, then ggml-vulkan wants one ~3.4 GiB buffer for the
-    // encoder graph (4.0 GiB gallocr reservation). Measurements (build #13):
-    // with largest block 6226 MiB the weights fit but the encoder buffer still
-    // failed — the load itself consumes the headroom. So require ~7 GiB
-    // contiguous up-front; below that the title restarts automatically (the UI
-    // reacts to NEEDS_RESTART) instead of dying 30 s deep in graph build.
-    if (prospero_memory::largest_free_block() < (7500ull << 20))
+    // Memory gate: SheetSage needs ~2.7 GiB of weights loaded into the direct
+    // pool FIRST, then ggml-vulkan wants one ~3.4 GiB buffer for the encoder
+    // graph (4.0 GiB gallocr reservation). Since the RADV arena allocator
+    // backs big buffers in 2 MiB pieces, contiguity no longer matters — only
+    // the pool's total free memory does. Below ~7.5 GiB total the title
+    // restarts automatically (the UI reacts to NEEDS_RESTART) instead of dying
+    // 30 s deep in graph build.
+    if (prospero_memory::free_total() < (7500ull << 20))
     {
         const unsigned long long mb =
-            static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20);
+            static_cast<unsigned long long>(prospero_memory::free_total() >> 20);
         char line[128];
-        std::snprintf(line, sizeof(line), "memory gate: largest free block %llu MiB", mb);
+        std::snprintf(line, sizeof(line), "memory gate: pool free %llu MiB", mb);
         stage_log(line);
         std::snprintf(response, response_capacity,
-                      "NEEDS_RESTART GPU memory fragmented: largest contiguous block is %llu MiB "
-                      "and SheetSage needs ~7.5 GiB free. Restart the title and retry.", mb);
+                      "NEEDS_RESTART GPU memory low: only %llu MiB free and SheetSage needs "
+                      "~7.5 GiB. Restart the title and retry.", mb);
         return 1;
     }
     const std::string model_root(root);
