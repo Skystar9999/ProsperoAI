@@ -728,6 +728,86 @@ void prospero_self_restart()
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Idle heap defrag (21.10): model load/unload cycles leave permanent RADV
+// islands in the direct-memory pool (deterministic layout). Generation keeps
+// working through the arena but a YuE2 track measured 1614 s on a dirty pool
+// vs ~250 s clean. When a job/chat-unload finds the pool fragmented and the
+// user then goes quiet, self-restart during idle: the title is back in ~15 s
+// with a ~11.3 GiB largest block. A clean boot never re-triggers the check,
+// so there is no restart loop.
+// ---------------------------------------------------------------------------
+namespace
+{
+std::atomic<unsigned long long> http_last_activity_ms{0};
+std::atomic<bool> defrag_armed{false};
+
+// Open-tab pollers must not count as presence (the user may walk away with
+// the tab open); real activity = page loads, downloads, API calls.
+bool is_background_poll(const char *path)
+{
+    return std::strcmp(path, "/api/jobs") == 0 ||
+           std::strncmp(path, "/api/jobs?id=", 13) == 0 ||
+           std::strcmp(path, "/api/system/memory") == 0 ||
+           std::strcmp(path, "/api/models/selection") == 0;
+}
+
+bool prospero_heap_fragmented()
+{
+#if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
+    return prospero_memory::largest_free_block() < (5ull << 30);
+#else
+    return false; // host harness has no PS5 pool to defrag
+#endif
+}
+
+bool jobs_in_flight()
+{
+    std::lock_guard<std::mutex> lock(jobs_mutex);
+    for (auto &up : jobs)
+        if (up->state == 0)
+            return true;
+    return false;
+}
+
+void *defrag_worker(void *)
+{
+    // 300 s idle floor: a track downloaded moments ago has fully buffered in
+    // the browser before we take the title down. Give up after 6 h so a
+    // permanently busy box does not keep a zombie watcher; the next finished
+    // job re-arms.
+    const unsigned long long idle_need_ms = 300000ull;
+    const unsigned long long deadline_ms = jobs_now_ms() + 6ull * 3600ull * 1000ull;
+    while (jobs_now_ms() < deadline_ms)
+    {
+        ::sleep(10);
+        if (jobs_in_flight())
+            continue;
+        const unsigned long long last = http_last_activity_ms.load();
+        if (last != 0 && jobs_now_ms() - last < idle_need_ms)
+            continue;
+        prospero_self_restart();
+        return nullptr; // the title goes down; the armed flag dies with it
+    }
+    defrag_armed.store(false);
+    return nullptr;
+}
+
+void prospero_arm_idle_defrag()
+{
+    if (!prospero_heap_fragmented())
+        return; // clean pool: nothing to win
+    bool expected = false;
+    if (!defrag_armed.compare_exchange_strong(expected, true))
+        return; // a watcher is already waiting
+    void *thread = nullptr;
+    if (jobs_thread_create(&thread, defrag_worker, nullptr, "prospero-defrag",
+                           256 * 1024) != 0)
+        defrag_armed.store(false);
+    // never joined on purpose: the worker either restarts the title or exits
+    // after its deadline; there is one per boot at most.
+}
+
 // Builds exactly the JSON that the synchronous /api/generate would send.
 std::string generate_response_json(const char *request_body)
 {
@@ -807,6 +887,8 @@ void *generate_job_worker(void *argument)
         ::sleep(8);
         prospero_self_restart();
     }
+    else
+        prospero_arm_idle_defrag(); // success on a dirty pool: restart when quiet
     return nullptr;
 }
 
@@ -982,7 +1064,10 @@ void handle_chat(const NetApi &api, int sock, const char *request_body)
 #if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
     if (const char *flag = json_value_start(request_body, "unload_after");
         flag != nullptr && (*flag == 't' || *flag == 'T'))
+    {
         gpt_runtime_check_idle_unload(0);
+        prospero_arm_idle_defrag(); // unload leaves islands: restart when quiet
+    }
 #endif
 }
 
@@ -3108,6 +3193,8 @@ void handle_connection(const NetApi &api, int sock)
     char method[8] = {};
     char path[256] = {};
     std::sscanf(request, "%7s %255s", method, path);
+    if (!is_background_poll(path))
+        http_last_activity_ms.store(jobs_now_ms());
     const char *header_end = std::strstr(request, "\r\n\r\n");
     const char *body = header_end != nullptr ? header_end + 4 : "";
     const char *range_header =
