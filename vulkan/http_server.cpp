@@ -755,7 +755,11 @@ bool is_background_poll(const char *path)
 bool prospero_heap_fragmented()
 {
 #if defined(PS5_LLAMA_VULKAN) && !defined(PROSPERO_HOST)
-    return prospero_memory::largest_free_block() < (5ull << 30);
+    // Clean boot measures ~11.3 GiB; measured dirty floors after YuE2/chat
+    // cycles are 3.1-5.6 GiB (arena builds hold ~5.5 — the first 5 GiB
+    // threshold never fired in the field, corrected 21.10). 8 GiB splits
+    // the two populations with margin on both sides.
+    return prospero_memory::largest_free_block() < (8ull << 30);
 #else
     return false; // host harness has no PS5 pool to defrag
 #endif
@@ -3311,10 +3315,14 @@ void handle_connection(const NetApi &api, int sock)
         int used = std::snprintf(
             mem, sizeof(mem),
             "{\"total_free_mib\":%llu,\"largest_block_mib\":%llu,\"flexible_free_mib\":%llu,"
-            "\"pool_mib\":%lld,\"blocks\":[",
+            "\"defrag_armed\":%s,\"last_activity_age_s\":%llu,\"pool_mib\":%lld,\"blocks\":[",
             static_cast<unsigned long long>(prospero_memory::free_total() >> 20),
             static_cast<unsigned long long>(prospero_memory::largest_free_block() >> 20),
             static_cast<unsigned long long>(prospero_memory::flexible_free() >> 20),
+            defrag_armed.load() ? "true" : "false",
+            http_last_activity_ms.load() == 0
+                ? 0ull
+                : (jobs_now_ms() - http_last_activity_ms.load()) / 1000ull,
             static_cast<long long>(pool_mib));
         for (int i = 0; i < block_count && used > 0 && used < static_cast<int>(sizeof(mem)) - 40;
              ++i)
