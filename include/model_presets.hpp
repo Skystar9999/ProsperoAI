@@ -118,6 +118,24 @@ inline constexpr PresetFile preset_files_13[] = {
 inline constexpr PresetFile preset_files_14[] = {
     {"HTDemucs-GGUF/htdemucs-q8_0.gguf", "htdemucs-q8_0.gguf", "b0f532ac6e5f373aeb11fa0df73253251e133832d9c8b9942dc58f50bc5b4388", 61940768ULL, nullptr, nullptr},
 };
+inline constexpr PresetFile preset_files_15[] = {
+    {"MOSS-Image-Base-Q4_K_M.gguf", "diffusion_model.gguf", "2c6b2741bc31d766c125369fabd2d5dbcc29ebf41e12e4af5adadb053a994572", 3199422624ULL, nullptr, nullptr},
+    {"Qwen3.5-9B-Q4_K_M.gguf", "text_encoder.gguf", "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", 5680522464ULL, "unsloth/Qwen3.5-9B-GGUF", "3885219b6810b007914f3a7950a8d1b469d598a5"},
+    {"vae/flux2-vae.safetensors", "vae.safetensors", "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3", 336211292ULL, "Comfy-Org/MOSS-Image", "24147db865fcdc207270f844777587223fed8d6e"},
+    {"tokenizer/tokenizer.json", "tokenizer.json", "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523", 19989325ULL, "OpenMOSS-Team/MOSS-Image-Base", "85975793d8b3d432f1b6e27f352abaa4c2a4c0d3"},
+};
+inline constexpr PresetFile preset_files_16[] = {
+    {"MOSS-Image-Base-Q4_K_M.gguf", "diffusion_model.gguf", "2c6b2741bc31d766c125369fabd2d5dbcc29ebf41e12e4af5adadb053a994572", 3199422624ULL, nullptr, nullptr},
+    {"Ternary-Bonsai-2-9B-Q2_0.gguf", "text_encoder.gguf", "1f884aa56aacd2bbbb2e4b7abaead2b1102b74a9c75a23fc33dab916813a384d", 2556640128ULL, "prism-ml/Ternary-Bonsai-2-9B-gguf", "5b2abb02362efbed46bbe204014b02837778b2c2"},
+    {"vae/flux2-vae.safetensors", "vae.safetensors", "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3", 336211292ULL, "Comfy-Org/MOSS-Image", "24147db865fcdc207270f844777587223fed8d6e"},
+    {"tokenizer/tokenizer.json", "tokenizer.json", "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523", 19989325ULL, "OpenMOSS-Team/MOSS-Image-Base", "85975793d8b3d432f1b6e27f352abaa4c2a4c0d3"},
+};
+inline constexpr PresetFile preset_files_17[] = {
+    {"MOSS-Image-Base-Q4_K_M.gguf", "diffusion_model.gguf", "2c6b2741bc31d766c125369fabd2d5dbcc29ebf41e12e4af5adadb053a994572", 3199422624ULL, nullptr, nullptr},
+    {"Ternary-Bonsai-2-9B-PTQ1_0.gguf", "text_encoder.gguf", "3561df7ac7d26a71ffa991ac2db740b10841c3a350aa2676ccd3ff5d428b4e8b", 1997486976ULL, "prism-ml/Ternary-Bonsai-2-9B-gguf", "5b2abb02362efbed46bbe204014b02837778b2c2"},
+    {"vae/flux2-vae.safetensors", "vae.safetensors", "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3", 336211292ULL, "Comfy-Org/MOSS-Image", "24147db865fcdc207270f844777587223fed8d6e"},
+    {"tokenizer/tokenizer.json", "tokenizer.json", "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523", 19989325ULL, "OpenMOSS-Team/MOSS-Image-Base", "85975793d8b3d432f1b6e27f352abaa4c2a4c0d3"},
+};
 inline constexpr Preset presets[] = {
     {"Mistral-7B-Instruct-v0.3.Q4_0.gguf", "Mistral 7B Instruct v0.3 Q4_0", "QuantFactory/Mistral-7B-Instruct-v0.3-GGUF", "a83fbb7c79c1afd59dfcce75272591cbe5a2412f", 0, 4113289152ULL, preset_files_0, 1},
     {"qwen3.8-9b-distill-q4-k-m.gguf", "Qwen3.8 9B Distill Q4_K_M", "empero-ai/Qwen3.8-9B-Distill-GGUF", "760121cd70bb4c36b2b5ec58eb765e0df5987efe", 0, 5780090176ULL, preset_files_1, 1},
@@ -136,6 +154,9 @@ inline constexpr Preset presets[] = {
     {"yue2-3b-q8-0", "YuE2 3B Q8_0 (Vulkan)", "ngquocvinh/YuE2-3B-GGUF", "9711e46e444185449185914dfb8694e6ce4069c9", 2, 4531984757ULL, preset_files_12, 6},
     {"sheetsage2-orig", "SheetSage2 Cover (Vulkan)", "audio-cpp/SheetSage2-GGUF", "4e88814450385334524e50df43724af583f74206", 2, 2708224256ULL, preset_files_13, 1},
     {"htdemucs-q8_0", "HTDemucs Stems Q8_0 (Vulkan)", "audio-cpp/audio.cpp-gguf", "661a224e9d9adbd49c01626f85e426f5f425d771", 2, 61940768ULL, preset_files_14, 1},
+    {"moss-image-q4", "MOSS-Image Base (Qwen3.5-9B Q4_K_M)", "unsloth/MOSS-Image-Base-GGUF", "63e7dee4bdc4254f125a704913edd84a3291b80f", 1, 9236145705ULL, preset_files_15, 4},
+    {"moss-image-bonsai-q2", "MOSS-Image Base (Bonsai Q2_0)", "unsloth/MOSS-Image-Base-GGUF", "63e7dee4bdc4254f125a704913edd84a3291b80f", 1, 6112263369ULL, preset_files_16, 4},
+    {"moss-image-bonsai-1bit", "MOSS-Image Base (Bonsai PTQ1_0)", "unsloth/MOSS-Image-Base-GGUF", "63e7dee4bdc4254f125a704913edd84a3291b80f", 1, 5553110217ULL, preset_files_17, 4},
 };
 inline constexpr std::size_t preset_count = sizeof(presets) / sizeof(presets[0]);
 }
