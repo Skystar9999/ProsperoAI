@@ -55,6 +55,29 @@ bool is_flux2_klein_model(const char *root)
     return root && model_index_has(root, "Flux2KleinPipeline");
 }
 
+// MOSS-Image bundle layout: diffusion_model.gguf + text_encoder.gguf (Qwen3.5
+// quant) + vae.safetensors + tokenizer.json inside the model folder. Presence
+// of all four files is the marker; GGUFs carry no pipeline string to grep.
+bool is_moss_image_bundle(const char *root)
+{
+    if (!root || !*root)
+        return false;
+    const char *names[] = {"diffusion_model.gguf", "text_encoder.gguf",
+                           "vae.safetensors", "tokenizer.json"};
+    for (const char *name : names)
+    {
+        char path[512];
+        if (std::snprintf(path, sizeof(path), "%s/%s", root, name) >=
+            static_cast<int>(sizeof(path)))
+            return false;
+        std::FILE *probe = std::fopen(path, "rb");
+        if (!probe)
+            return false;
+        std::fclose(probe);
+    }
+    return true;
+}
+
 bool is_sdxl_checkpoint(const char *root)
 {
     if (!root || !*root)
@@ -217,9 +240,11 @@ bool ensure_context(const char *root)
     sd_ctx_params_t parameters;
     sd_ctx_params_init(&parameters);
     const bool flux2_klein = is_flux2_klein_model(root);
+    const bool moss = is_moss_image_bundle(root);
     char diffusion_model_path[512];
     char llm_path[512];
     char vae_path[512];
+    char tokenizer_path[512];
     char checkpoint_path[512];
     const bool sdxl_checkpoint = is_sdxl_checkpoint(root);
     const bool sdxl = sdxl_checkpoint || model_index_has(root, "StableDiffusionXLPipeline");
@@ -243,7 +268,17 @@ bool ensure_context(const char *root)
          std::snprintf(vae_path, sizeof(vae_path), "%s/vae.safetensors", root) >=
              static_cast<int>(sizeof(vae_path))))
         return false;
-    parameters.model_path = flux2_klein ? nullptr
+    if (moss &&
+        (std::snprintf(diffusion_model_path, sizeof(diffusion_model_path), "%s/diffusion_model.gguf", root) >=
+             static_cast<int>(sizeof(diffusion_model_path)) ||
+         std::snprintf(llm_path, sizeof(llm_path), "%s/text_encoder.gguf", root) >=
+             static_cast<int>(sizeof(llm_path)) ||
+         std::snprintf(vae_path, sizeof(vae_path), "%s/vae.safetensors", root) >=
+             static_cast<int>(sizeof(vae_path)) ||
+         std::snprintf(tokenizer_path, sizeof(tokenizer_path), "%s/tokenizer.json", root) >=
+             static_cast<int>(sizeof(tokenizer_path))))
+        return false;
+    parameters.model_path = (flux2_klein || moss) ? nullptr
                             : (sdxl_checkpoint || realistic_vision) ? checkpoint_path
                                                                   : root;
     if (flux2_klein)
@@ -253,12 +288,20 @@ bool ensure_context(const char *root)
         parameters.vae_path = vae_path;
         parameters.vae_format = SD_VAE_FORMAT_FLUX2;
     }
+    if (moss)
+    {
+        parameters.diffusion_model_path = diffusion_model_path;
+        parameters.llm_path = llm_path;
+        parameters.vae_path = vae_path;
+        parameters.tokenizer = tokenizer_path;
+        parameters.vae_format = SD_VAE_FORMAT_FLUX2;
+    }
     if (realistic_vision)
         parameters.vae_path = vae_path;
     parameters.n_threads = 1;
     parameters.wtype = SD_TYPE_F16;
     parameters.rng_type = CUDA_RNG;
-    parameters.prediction = (is_sd3_model(root) || flux2_klein) ? FLOW_PRED : EPS_PRED;
+    parameters.prediction = (is_sd3_model(root) || flux2_klein || moss) ? FLOW_PRED : EPS_PRED;
     parameters.enable_mmap = false;
     parameters.eager_load = false;
     parameters.diffusion_conv_direct = false;
