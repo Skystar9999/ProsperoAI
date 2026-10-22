@@ -103,6 +103,9 @@ if(NOT CMAKE_CROSSCOMPILING)
     add_executable(vulkan-runtime-abi-test "${PROS_ROOT}/tests/vulkan_runtime_abi_test.cpp")
     target_link_libraries(vulkan-runtime-abi-test PRIVATE llama stable-diffusion ggml-vulkan)
     target_compile_features(vulkan-runtime-abi-test PRIVATE cxx_std_20)
+    # sd.cpp a77d362 no longer exports src/ PUBLIC; tests include core/parallel.h + model_io/pickle_io.h directly.
+    target_include_directories(vulkan-runtime-abi-test PRIVATE
+        "${PROS_ROOT}/.deps/stable-diffusion-vulkan/src")
     target_compile_options(vulkan-runtime-abi-test PRIVATE -UNDEBUG
         "-include${CMAKE_CURRENT_LIST_DIR}/sd-constant-tls.hpp")
     add_executable(vulkan-runtime-media-test "${PROS_ROOT}/tests/media_vulkan_test.cpp"
