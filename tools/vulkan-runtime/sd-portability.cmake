@@ -80,3 +80,42 @@ set_source_files_properties("${patched_model_manager}"
     DIRECTORY "${PROS_ROOT}/.deps/stable-diffusion-vulkan"
     PROPERTIES INCLUDE_DIRECTORIES
     "${PROS_ROOT}/.deps/stable-diffusion-vulkan/src")
+
+# Upstream returns std::u8string (basic_string<char8_t>) from std::string functions in
+# resolve_index_shard_path; the pinned toolchain rejects the implicit conversion.
+# Rebuild the bytes explicitly through the iterator-range constructor.
+set(safetensors_io_source "${PROS_ROOT}/.deps/stable-diffusion-vulkan/src/model_io/safetensors_io.cpp")
+file(READ "${safetensors_io_source}" safetensors_io_content)
+set(invalid_u8_return [==[        return shard_fs_path.lexically_normal().u8string();
+    }
+    return (fs::u8path(index_path).parent_path() / shard_fs_path).lexically_normal().u8string();]==])
+set(valid_u8_return [==[        return std::string(shard_fs_path.lexically_normal().u8string().begin(),
+                                   shard_fs_path.lexically_normal().u8string().end());
+    }
+    return std::string((fs::u8path(index_path).parent_path() / shard_fs_path).lexically_normal().u8string().begin(),
+                       (fs::u8path(index_path).parent_path() / shard_fs_path).lexically_normal().u8string().end());]==])
+string(FIND "${safetensors_io_content}" "${valid_u8_return}" safetensors_io_patch_at)
+if(safetensors_io_patch_at LESS 0)
+    string(FIND "${safetensors_io_content}" "${invalid_u8_return}" safetensors_io_patch_at)
+    if(safetensors_io_patch_at LESS 0)
+        message(FATAL_ERROR "Pinned SD safetensors shard-path helper changed; review the char8_t patch")
+    endif()
+    string(REPLACE "${invalid_u8_return}" "${valid_u8_return}" safetensors_io_content "${safetensors_io_content}")
+endif()
+set(patched_safetensors_io "${CMAKE_CURRENT_BINARY_DIR}/sd-patches/safetensors_io.cpp")
+if(EXISTS "${patched_safetensors_io}")
+    file(READ "${patched_safetensors_io}" previous_safetensors_io)
+else()
+    set(previous_safetensors_io "")
+endif()
+if(NOT previous_safetensors_io STREQUAL safetensors_io_content)
+    file(WRITE "${patched_safetensors_io}" "${safetensors_io_content}")
+endif()
+get_target_property(sd_sources_io stable-diffusion SOURCES)
+list(REMOVE_ITEM sd_sources_io "${safetensors_io_source}")
+list(APPEND sd_sources_io "${patched_safetensors_io}")
+set_property(TARGET stable-diffusion PROPERTY SOURCES "${sd_sources_io}")
+set_source_files_properties("${patched_safetensors_io}"
+    DIRECTORY "${PROS_ROOT}/.deps/stable-diffusion-vulkan"
+    PROPERTIES INCLUDE_DIRECTORIES
+    "${PROS_ROOT}/.deps/stable-diffusion-vulkan/src;${PROS_ROOT}/.deps/stable-diffusion-vulkan/src/model_io")
