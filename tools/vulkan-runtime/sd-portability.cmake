@@ -49,11 +49,11 @@ set_source_files_properties("${patched_pickle}"
 set(model_manager_source "${PROS_ROOT}/.deps/stable-diffusion-vulkan/src/model_manager.cpp")
 file(READ "${model_manager_source}" model_manager_content)
 set(invalid_budget_check [==[        if (total_bytes > 0 && free_bytes > total_bytes && sd_backend_is(backend, "Vulkan")) {
-            return size_t{0};
-        }]==])
+            if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                return size_t{0};
+            }]==])
 set(valid_budget_check [==[        if (total_bytes > 0 && free_bytes > total_bytes && sd_backend_is(backend, "Vulkan")) {
-            free_bytes = total_bytes;
-        }]==])
+            // PS5: the radv user driver may report a wrapped budget on any device type;]==])
 string(FIND "${model_manager_content}" "${valid_budget_check}" model_manager_patch_at)
 if(model_manager_patch_at LESS 0)
     string(FIND "${model_manager_content}" "${invalid_budget_check}" model_manager_patch_at)
