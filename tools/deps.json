@@ -54,8 +54,8 @@
       "name": "stable-diffusion-vulkan",
       "about": "Experimental SD backend built against the same ggml ABI as Vulkan text",
       "kind": "archive",
-      "url": "https://codeload.github.com/leejet/stable-diffusion.cpp/tar.gz/f89d9b13d730eabeede7314ce49dacd18d3c90c2",
-      "sha256": "14339079bcbfe5567c80bdff4f83bda54d7a6660594470c36e4d1dd18134ecd4",
+      "url": "https://codeload.github.com/leejet/stable-diffusion.cpp/tar.gz/a77d362",
+      "sha256": "66bbd487926685798693545bd924386b20579c4878dfd76d9ffb57e981c6ea48",
       "extract": ".deps/stable-diffusion-vulkan",
       "strip": 1,
       "creates": ".deps/stable-diffusion-vulkan/CMakeLists.txt"
